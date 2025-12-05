@@ -427,7 +427,7 @@ def plot_beam_fluct(inputdata):
     
         #Set the lower bound to be transparent, so we see the background contourf
         transMap.set_under(color='b', alpha=0.)
-        upperBound = np.amax(Q)/5
+        upperBound = np.amax(Q)
         lowerBound = upperBound*1e-2 #What's the lowest value we still display?
 
         #beamfig = ax1.contourf(100*RR_beam, 100*ZZ_beam, Q ,100, vmin=lowerBound, cmap=transMap, zorder=9) 

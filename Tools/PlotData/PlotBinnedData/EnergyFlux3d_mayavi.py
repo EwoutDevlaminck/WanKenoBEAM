@@ -107,8 +107,13 @@ def flux_and_beam_in_3d(idata, hdf5data, surface_model):
     mlab.quiver3d(X0, X1, X2, Ffield0, Ffield1, Ffield2, mode='arrow')
     
     # Plot the surface
-    mlab.mesh(X, Y, Z, scalars=Fn, colormap=colormap)
-    mlab.colorbar()
+    surf = mlab.mesh(X, Y, Z, scalars=Fn, colormap=colormap)
+    mlab.colorbar(surf)
+
+    # Set symmetric color range
+    vmax = np.abs(Fn).max()
+    surf.module_manager.scalar_lut_manager.data_range = (-vmax, vmax)
+
 
     # plot the antenna plane
     mlab.mesh(Xant, Yant, Zant, color=(0.5,0.5,0.5))
