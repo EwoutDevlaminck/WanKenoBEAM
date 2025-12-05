@@ -344,7 +344,11 @@ def plot_beam_fluct(inputdata):
     # ... fluctuation envelope ...
     if not idata.scattering:
         reds_map = matplotlib.colormaps.get_cmap('Reds')
-        ax1.set_facecolor(reds_map(0.))
+        #ax1.set_facecolor(reds_map(0.))
+        Ne = IntSample(R1d, Z1d, Eq.NeInt.eval)
+        c1 = ax1.pcolormesh(R1d, Z1d, Ne, cmap='Reds', vmin=0., alpha=.9, zorder=0)
+        colorbarNe = plt.colorbar(c1, orientation='vertical', pad=.05, shrink=.7)
+        colorbarNe.set_label(label=r'$n_e [1e19 m^{-3}]$', size=13)
     else:
         Ne = IntSample(R1d, Z1d, Eq.NeInt.eval)
         deltaNe = np.where(equilibrium<1.6, fluct.T*Ne, 0)
@@ -399,7 +403,7 @@ def plot_beam_fluct(inputdata):
     
     #This color matches my slides, cheers ED
     clrs_Ewout = ['#007480', '#413C3A', '#00A79F']
-    c_white_trans = clrs.colorConverter.to_rgba('white', alpha=0.5)
+    c_white_trans = clrs.colorConverter.to_rgba('white', alpha=0.8)
     Vel_recorded = False
     for beam in range(len(Wfct)):
         if Vel_recorded:
@@ -427,7 +431,7 @@ def plot_beam_fluct(inputdata):
         lowerBound = upperBound*1e-2 #What's the lowest value we still display?
 
         #beamfig = ax1.contourf(100*RR_beam, 100*ZZ_beam, Q ,100, vmin=lowerBound, cmap=transMap, zorder=9) 
-        beamfig = ax1.pcolormesh(100*RR_beam, 100*ZZ_beam, Q, vmin=lowerBound, cmap=transMap, zorder=9)
+        beamfig = ax1.pcolormesh(100*RR_beam, 100*ZZ_beam, Q, vmin=lowerBound, vmax=upperBound, cmap=transMap, zorder=9)
     
         #Make it so that the colourmap only starts at lowerBound
         displayedMap = plt.cm.ScalarMappable(norm=clrs.Normalize(lowerBound, upperBound), cmap=transMap)  

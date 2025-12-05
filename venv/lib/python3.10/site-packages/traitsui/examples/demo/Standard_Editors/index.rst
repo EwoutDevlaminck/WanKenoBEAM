@@ -1,1 +1,0 @@
-These examples demonstrate how the Standard Editors available in TraitsUI can be used.

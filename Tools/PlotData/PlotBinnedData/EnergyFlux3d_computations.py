@@ -292,6 +292,6 @@ def compute_flux(field, surface, interpolate_field=True):
                                        interpolate_field=interpolate_field)
 
     # Simpson quadrature applied to each dimension
-    computed_flux = Integrate.simps(Integrate.simps(FnJ, v), u)
+    computed_flux = Integrate.simpson(Integrate.simpson(FnJ, x=v), x=u)
 
     return computed_flux, [u, v, X, Y, Z, FnJ, Fn]

@@ -1,8 +1,0 @@
-[etsdemo_data]
-demo = traitsui.extras._demo_info:info
-
-[traitsui.toolkits]
-null = traitsui.null:toolkit
-qt = traitsui.qt:toolkit
-qt4 = traitsui.qt:toolkit
-wx = traitsui.wx:toolkit

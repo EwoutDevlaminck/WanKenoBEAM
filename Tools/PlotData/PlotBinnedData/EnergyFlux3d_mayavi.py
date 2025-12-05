@@ -11,6 +11,7 @@ import numpy as np
 # Local modules
 import Tools.PlotData.PlotBinnedData.grids as grids
 import Tools.PlotData.PlotBinnedData.EnergyFlux3d_computations as EFcomp
+from Tools.PlotData.PlotBinnedData.Beam3D import *
 
 
 # This is the main procedure called by WKBeam
@@ -80,6 +81,15 @@ def flux_and_beam_in_3d(idata, hdf5data, surface_model):
         colormap = idata.colormap
     else:
         colormap = 'coolwarm'
+        
+    # Equilibrium flag
+    if hasattr(idata, 'plotequilibrium'):
+        plotequilibrium = idata.plotequilibrium
+    else:
+        plotequilibrium = True
+
+    # Get the relevant raytracing input file
+    rt_idata = InputData(idata.raytracing_input)
 
     # Extract data
     flux, fdata, flux_field, antenna = data
@@ -97,11 +107,38 @@ def flux_and_beam_in_3d(idata, hdf5data, surface_model):
     mlab.quiver3d(X0, X1, X2, Ffield0, Ffield1, Ffield2, mode='arrow')
     
     # Plot the surface
-    mlab.mesh(X, Y, Z, scalars=Fn, colormap=colormap)
-    mlab.colorbar()
+    surf = mlab.mesh(X, Y, Z, scalars=Fn, colormap=colormap)
+    mlab.colorbar(surf)
+
+    # Set symmetric color range
+    vmax = np.abs(Fn).max()
+    surf.module_manager.scalar_lut_manager.data_range = (-vmax, vmax)
+
 
     # plot the antenna plane
     mlab.mesh(Xant, Yant, Zant, color=(0.5,0.5,0.5))
+
+    # Extract the magnetic field equilibrium and build data    
+    if plotequilibrium:
+
+        # ... load equilibrium ...
+        Eq = TokamakEquilibrium(rt_idata)
+        Req = Eq.Rgrid
+        Zeq = Eq.zgrid
+        psi = IntSample(Req[:,0], Zeq[0,:], Eq.PsiInt.eval).T
+        psisep = 1.0 # psi is always normalized in the euilibrium object
+
+
+        nxy = 50
+        nz = 100
+        psicontours = [psisep]
+
+        xEq, yEq, zEq = equilibrium_3Dgrid(Req, Zeq, nxy, nz, 
+                                           section='aroundzero')
+
+        plot_equilibrium3D(Req, Zeq, xEq, yEq, zEq, psi, psicontours, mlab,
+                           colormap='RdYlBu', opacity = 0.3)    
+
     
     # Display the figure
     mlab.show()

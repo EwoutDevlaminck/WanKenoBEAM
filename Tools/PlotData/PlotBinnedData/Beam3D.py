@@ -132,7 +132,7 @@ def process_data_and_plot (rt_idata, hdf5data, plotequilibrium=False, skip=None)
         psicontours = [psisep]
 
         xEq, yEq, zEq = equilibrium_3Dgrid(Req, Zeq, nxy, nz, 
-                                           section='rotatedquarter')
+                                           section='aroundzero')
 
         plot_equilibrium3D(Req, Zeq, xEq, yEq, zEq, psi, psicontours, mlab,
                            colormap='RdYlBu', opacity = 0.3)    
@@ -364,6 +364,9 @@ def equilibrium_3Dgrid(R, z, nptxy, nptz, section='all'):
     elif section == 'rotatedquarter':
         xgrid = np.linspace(0.1, Rmax, nptxy)
         ygrid = np.linspace(0.1, Rmax, nptxy)
+    elif section == 'aroundzero':
+        xgrid = np.linspace(0.1, + Rmax, nptxy)
+        ygrid = np.linspace(- Rmax*0.71, + Rmax*0.71, nptxy)
     else:
         raise ValueError('section flag not recognized.')
     zgrid = np.linspace(- zmax, + zmax, nptz)
