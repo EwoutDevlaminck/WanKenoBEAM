@@ -8,7 +8,7 @@ import h5py
 from CommonModules.input_data import InputData
 from CommonModules.PlasmaEquilibrium import IntSample, StixParamSample
 from CommonModules.PlasmaEquilibrium import ModelEquilibrium
-from CommonModules.PlasmaEquilibrium import TokamakEquilibrium
+from CommonModules.PlasmaEquilibrium import TokamakEquilibrium, TokamakEquilibrium2
 from Tools.PlotData.CommonPlotting import plotting_functions
 def plot_binned(inputdata):
 	#changed by Ewout, get the flux surface info from the configfile
@@ -108,6 +108,29 @@ def plot_binned(inputdata):
     if idata.equilibrium == 'Tokamak' and resolveZ:
 
         Eq = TokamakEquilibrium(idata)
+
+
+        # Define the grid on the poloidal plane of the device
+        #
+        print('Using resolution nptR = {}, nptZ = {}'.format(nmbrX, nmbrZ))
+        #
+        R1d = np.linspace(Xmin, Xmax, nmbrX)
+        Z1d = np.linspace(Zmin, Zmax, nmbrZ)
+
+        # Position of the magnetic axis
+        axis = Eq.magn_axis_coord_Rz
+
+        StixX, StixY, field_and_density = StixParamSample(R1d, Z1d, Eq, idata.freq)
+
+
+        # Define the quantity for the visualization of the equilibrium
+        psi = IntSample(R1d, Z1d, Eq.PsiInt.eval)
+        equilibrium = psi 
+        Ne = IntSample(R1d, Z1d, Eq.NeInt.eval)
+            
+    if idata.equilibrium == 'Tokamak2D' and resolveZ:
+
+        Eq = TokamakEquilibrium2(idata)
 
 
         # Define the grid on the poloidal plane of the device

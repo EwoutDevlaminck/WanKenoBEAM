@@ -15,7 +15,7 @@ import h5py
 from CommonModules.input_data import InputData
 from CommonModules.PlasmaEquilibrium import IntSample, StixParamSample
 from CommonModules.PlasmaEquilibrium import ModelEquilibrium
-from CommonModules.PlasmaEquilibrium import TokamakEquilibrium
+from CommonModules.PlasmaEquilibrium import TokamakEquilibrium, TokamakEquilibrium2
 from CommonModules.PlasmaEquilibrium import AxisymmetricEquilibrium
 from RayTracing.modules.atanrightbranch import atanRightBranch
 from RayTracing.modules.scattering.GaussianModel import GaussianModel_base
@@ -267,6 +267,35 @@ def plot_beam_fluct(inputdata):
         psi = IntSample(R1d, Z1d, Eq.PsiInt.eval)
         equilibrium = psi 
 
+    elif idata.equilibrium == 'Tokamak2D':
+
+        Eq = TokamakEquilibrium2(idata)
+
+        # Figure size
+        figsize = (6,8)
+
+        # Define the grid on the poloidal plane of the device
+        Rmin = Eq.Rgrid[0, 0]
+        Rmax = Eq.Rgrid[-1, 0]
+        Zmin = Eq.zgrid[0, 0]
+        Zmax = Eq.zgrid[0, -1]
+        nptR = int((Rmax - Rmin) / (idata.rmin / 100.)) # dR = a/100 
+        nptZ = int((Zmax - Zmin) / (idata.rmin / 100.)) # dZ = a/100
+        #
+        print('Using resolution nptR = {}, nptZ = {}'.format(nptR, nptZ))
+        #
+        R1d = np.linspace(Rmin, Rmax, nptR)
+        Z1d = np.linspace(Zmin, Zmax, nptZ)
+
+        # Position of the magnetic axis
+        axis = Eq.magn_axis_coord_Rz
+
+        StixX, StixY, field_and_density = StixParamSample(R1d, Z1d, Eq, idata.freq)
+
+        # Define the quantity for the visualization of the equilibrium
+        psi = IntSample(R1d, Z1d, Eq.PsiInt.eval)
+        equilibrium = psi 
+
     elif idata.equilibrium == 'Axisymmetric':
 
         Eq = AxisymmetricEquilibrium(idata)
@@ -352,7 +381,7 @@ def plot_beam_fluct(inputdata):
     else:
         Ne = IntSample(R1d, Z1d, Eq.NeInt.eval)
         deltaNe = np.where(equilibrium<1.6, fluct.T*Ne, 0)
-        c1 = ax1.pcolormesh(R1d, Z1d, deltaNe, cmap='Reds', vmin=0., alpha=.9, zorder=0)
+        c1 = ax1.pcolormesh(R1d, Z1d, deltaNe, cmap='Reds', vmin=0., vmax=1, alpha=.9, zorder=0)
         colorbarFluct = plt.colorbar(c1, orientation='vertical', pad=.05, shrink=.7)
         #colorbarFluct.set_label(label=r'$\langle \delta n_e\rangle /n_e$', size=16)
         colorbarFluct.set_label(label=r'$RMS\ \delta n_e [1e19 m^{-3}]$', size=13)
