@@ -15,7 +15,7 @@ from scipy.optimize import fsolve
 # load local modules
 import CommonModules.physics_constants as phys
 from CommonModules.PlasmaEquilibrium import ModelEquilibrium
-from CommonModules.PlasmaEquilibrium import TokamakEquilibrium
+from CommonModules.PlasmaEquilibrium import TokamakEquilibrium, TokamakEquilibrium2
 from CommonModules.PlasmaEquilibrium import AxisymmetricEquilibrium
 from RayTracing.modules.scattering.GaussianModel import GaussianModel_SingleMode
 from RayTracing.modules.scattering.GaussianModel import GaussianModel_MultiMode
@@ -49,6 +49,8 @@ class TraceOneRay(object):
         # define interpolation object for the plasma equilibrium
         if idata.equilibrium == 'Tokamak':
             self.Eq = TokamakEquilibrium(idata)
+        elif idata.equilibrium == 'Tokamak2D':
+            self.Eq = TokamakEquilibrium2(idata)
         elif idata.equilibrium == 'Model':
             self.Eq = ModelEquilibrium(idata)
         elif idata.equilibrium == 'Axisymmetric':
@@ -478,7 +480,7 @@ class TraceOneRay(object):
         # create an integrator object (call the right derivatives function corresponding on
         # if vacuum or plasma
 	
-        if equilibrium == 'Tokamak' or equilibrium == 'Axisymmetric':
+        if equilibrium == 'Tokamak' or equilibrium == 'Tokamak2D' or equilibrium == 'Axisymmetric':
             self.r = ode(self.__ray_trace_function__).set_integrator('dopri5',
                                                                      rtol=self.integratorRelTol,
                                                                      atol=self.integratorAbsTol,

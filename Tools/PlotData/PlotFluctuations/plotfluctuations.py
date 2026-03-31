@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from CommonModules.input_data import InputData
 from CommonModules.PlasmaEquilibrium import IntSample
 from CommonModules.PlasmaEquilibrium import ModelEquilibrium
-from CommonModules.PlasmaEquilibrium import TokamakEquilibrium
+from CommonModules.PlasmaEquilibrium import TokamakEquilibrium, TokamakEquilibrium2
 from CommonModules.PlasmaEquilibrium import AxisymmetricEquilibrium
 from RayTracing.modules.atanrightbranch import atanRightBranch
 from RayTracing.modules.scattering.GaussianModel import GaussianModel_base
@@ -71,6 +71,33 @@ def plot_fluct(configfile):
     if idata.equilibrium == 'Tokamak':
 
         Eq = TokamakEquilibrium(idata)
+
+        # Figure size
+        figsize = (6,8)
+
+        # Define the grid on the poloidal plane of the device
+        Rmin = Eq.Rgrid[0, 0]
+        Rmax = Eq.Rgrid[-1, 0]
+        Zmin = Eq.zgrid[0, 0]
+        Zmax = Eq.zgrid[0, -1]
+        nptR = int((Rmax - Rmin) / (idata.rmin / 100.)) # dR = a/100 
+        nptZ = int((Zmax - Zmin) / (idata.rmin / 100.)) # dZ = a/100
+        #
+        print('Using resolution nptR = {}, nptZ = {}'.format(nptR, nptZ))
+        #
+        R1d = np.linspace(Rmin, Rmax, nptR)
+        Z1d = np.linspace(Zmin, Zmax, nptZ)
+
+        # Position of the magnetic axis
+        axis = Eq. magn_axis_coord_Rz
+
+        # Define the quantity for the visualization of the equilibrium
+        psi = IntSample(R1d, Z1d, Eq.PsiInt.eval)
+        equilibrium = psi
+
+    elif idata.equilibrium == 'Tokamak2D':
+
+        Eq = TokamakEquilibrium2(idata)
 
         # Figure size
         figsize = (6,8)
@@ -153,7 +180,7 @@ def plot_fluct(configfile):
     fig1 = plt.figure(1, figsize=figsize)
     ax1 = fig1.add_subplot(111, aspect='equal')
     # ... fluctuation envelope ...
-    c1 = ax1.pcolormesh(R1d, Z1d,fluct.T, cmap='Reds')
+    c1 = ax1.pcolormesh(R1d, Z1d,np.sqrt(fluct.T), cmap='Reds', vmin=0.0, vmax=1)
     colorbarFluct = plt.colorbar(c1, orientation='vertical')
     ### colorbarFluct.set_label(r'')
     # ... flux surfaces ...
@@ -161,7 +188,7 @@ def plot_fluct(configfile):
     ax1.contour(R1d, Z1d, equilibrium, [1.], colors='black')
     ax1.set_xlabel('$R$ [cm]') 
     ax1.set_ylabel('$Z$ [cm]')
-    ax1.set_title(r'$\langle \delta n_e^2\rangle /n_e^2$', fontsize=20)
+    ax1.set_title(r'$RMS\ \delta n_e /n_e$', fontsize=20)
 
     
     fig2 = plt.figure(2, figsize=figsize)

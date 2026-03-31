@@ -37,6 +37,7 @@ import scipy.integrate as intgr
 # local modules
 import CommonModules.BiSplineDer as bispl
 import CommonModules.LoadMagneticField as topfile
+import CommonModules.LoadDensityField as nefile
 import CommonModules.AxisymmetricEquilibrium as axeq
 from CommonModules.grid_extender import extend_regular_grid_data as gext
 
@@ -361,16 +362,23 @@ class MagneticSurfaces(object):
             Rloc1D = Rloc[:,0]
             zloc1D = zloc[0,:]
 
-            # Check if the flux function is convex or concave by comparing
-            # the value in the center of the grid with the value at the 
-            # separatrix, and reverse sign when it is concave
-            nptR, nptz = np.shape(psiloc)
-            iR = int(nptR / 2)
-            iz = int(nptz / 2)
-            psi_center = psiloc[iR, iz]
+            if hasattr(idata, 'axis_guess_Rz'):
+                R0_guess, z0_guess = idata.axis_guess_Rz
+                psi_center = psiloc[np.abs(Rloc1D - R0_guess).argmin(), 
+                                    np.abs(zloc1D - z0_guess).argmin()]
+            else:
+
+                # Check if the flux function is convex or concave by comparing
+                # the value in the guessed c of the grid with the value at the 
+                # separatrix, and reverse sign when it is concave
+                nptR, nptz = np.shape(psiloc)
+                iR = int(nptR / 2)
+                iz = int(nptz / 2)
+                psi_center = psiloc[iR, iz]
             if psi_center > psi_sep:
                 psiloc = - psiloc
                 psi_sep = - psi_sep
+
 
             # Normalize the poloidal flux and compute the magnetic axis
             # R-z coordinates
@@ -1015,6 +1023,236 @@ class TokamakEquilibrium(MagneticSurfaces):
 
 #
 # End of class TokamakEquilibrium
+
+###############################################################################
+# TokamakEquilibrium CLASS. 
+# READS THE INPUT FILES AND INTERPOLATES THE MAGNETIC FIELD,
+# ELECTRON DENSITY, AND ELECTRON TEMPERATURE 
+# THIS APPLIES STRICTLY TO TOKAMAK GEOMETRY ONLY! 
+# ANALYTICAL MODELS AND GENERIC AXISYMMETRIC DEVICES HAVE THEIR OWN CLASS,
+# WHICH DO NOT INVOLVE MAGNETIC SURFACES.
+###############################################################################
+class TokamakEquilibrium2(MagneticSurfaces):
+
+    """This class reads the topfile and provides the interpolation of the 
+    magnetic equilibrium parameters on the equilibrium grid, namely, 
+    the normalized poloidal flux and the components of the magnetic 
+    field, more specifically, the toroidal component, the mjor-radius 
+    component and the vertical component all expressend in Tesla.
+
+    The input files Te.dat and ne.dat are different now, and consist of 2D data already. 
+    Specifically used for the FIR diagnostic trial on TCV
+
+    LIST OF ATTRIBUTES:
+
+     <> rmaj: 
+        float scalar, nominal major radius of the tokamak;
+
+     <> rmin: 
+        float scalar, nominal minor radius of the tokamak;
+
+     <> Rgrid: 
+        float ndarray shape = (nptR, nptz), major radius coordinate 
+        on the equilinrium grid (in cm); the grid is rectangular with
+        nptR point in the major radius coordinate and nptz points in
+        the vertical coordinate;
+
+     <> zgrid: 
+        float ndarray shape = (nptR, nptz), vertical coordinate on 
+        the equilibrium grid (in cm), cf. the definition of Rgird;
+
+     <> psigrid: 
+        float ndarray shape = (nptR, nptz), poloidal flux function 
+        on the equilibrium grid (normalized), cf. definition of Rgrid;
+
+     <> Bgrid:
+        float ndarray shape = (3, nptR, nptz), magnetic field components 
+        on the equilibrium grid in Tesla; specifically, Bgrid[ib, iR, iz]
+        is the value at the grid point labeled by (iR, iz) of the radial
+        (ib = 0), vertical (ib = 1), and toroidal (ib = 2) component of
+        the equilibrium magnetic field;
+
+     <> psi_profile: (_ne for el. density, _Te for the one gained when 
+		reading the temperature file)
+        float ndarray shape = (nsurf_profile), normalized poloidal flux
+        array of the density and temperature profiles;
+
+     <> ne_profile: 
+        float ndarray shape = (nsurf_profiles), electron number density in 
+        units of 1.e13 cm^-3 on magnetic surfaces used for profiles;
+
+     <> Te_profile:
+        float ndarray shape = (nsurf_profiles), electron temperature in 
+        keV on magnetic surfaces used for profiles;
+
+     <> PsiInt:
+        BiSpline object for the interpolation
+        of the normalized poloidal flux 
+
+     <> BtInt, BRInt, BzInt:
+        BiSpline object for the interpolation
+        of the toroidal, major-radius and vertical component 
+        of the magnetic field respectively in Tesla 
+
+     <> magn_axis_coord_Rz:
+        float ndarray shape = (2), coordinates in the R-z (poloidal) plane
+        of the magnetic axis; coordinate are extracted by
+            R, z = magn_axis_coord_Rz
+        with R and z being the major radius and the vertical coordinate of
+        the magnetic axis in cm, respectively.
+
+     <> NeInt:
+        instance of the class BiSpline for the interpolation
+        of the electron density profile (in units of 1.e13 cm^-3);
+
+     <> TeInt:
+        instance of the class BiSpline for the interpolation
+        of the electron temperature profiles (in keV);
+
+     		
+    LIST OF METHODS:
+
+      - flux_to_grid_coord(psi, theta)
+        transform flux coordinates (psi, theta) into (R, z) coordinates; 
+
+      - volume_element_J(theta, psi):
+        Volume elemente in flux coordinates.
+
+      - compute_dvolume_dpsi(psi):
+        Derivative of the volumes enclosed by flux surfaces with
+        respect to psi.
+    """
+	
+    ########################################################################
+    # INITIALIZATION OF THE CLASS.
+    ########################################################################
+    def __setup__(self, idata):
+        
+        """Complete the initialidation of the object.
+        """
+
+        # if not the test models are considered
+        if idata.analytical_tokamak == 'No':
+
+            # if defined, multiply the magnetic field with a specified 
+            # factor to shift absorption for test purposes
+            try:
+                self.Bgrid = self.Bgrid * idata.factormagneticfield
+            except AttributeError:
+                pass
+
+            # One dimensional arrays with the values of both the major-radius 
+            # and the vertical coordinates on the equilibrium grid
+            Rgrid1D = self.Rgrid[:,0]
+            zgrid1D = self.zgrid[0,:]
+
+            # Interpolation object for the toroidal field 
+            self.BtInt = bispl.BiSpline(Rgrid1D, zgrid1D, self.Bgrid[2,:,:])
+            
+            # Interpolation object for the radial field 
+            self.BRInt = bispl.BiSpline(Rgrid1D, zgrid1D, self.Bgrid[0,:,:])
+            
+            # Interpolation object for the vertical field
+            self.BzInt = bispl.BiSpline(Rgrid1D, zgrid1D, self.Bgrid[1,:,:])
+
+            # Load the electron density and temperature profile
+            input_dir = idata.equilibriumdirectory
+            nedata = nefile.read(input_dir)
+            Rloc, zloc, neloc = nedata
+            Rgrid1D = Rloc[:,0]
+            zgrid1D = zloc[0,:]
+            self.NeInt = bispl.BiSpline(Rgrid1D, zgrid1D, neloc)
+
+            # Load the electron temperature profile
+            input_dir = idata.equilibriumdirectory
+            psi_prf, Te_prf = self.__plasma_profile__(input_dir, 'Te.dat')
+            self.psi_profile_Te = psi_prf  
+            self.Te_profile = Te_prf
+            self.TeInt =  bispl.UniBiSpline(psi_prf, Te_prf, self.PsiInt)
+  
+
+        # if the test model for the TOKAMAK geometry is considered
+        elif idata.analytical_tokamak == 'Yes':
+            # use testmodel
+            # use constant value for psi smaller than some treshhold, 
+            # which is defined in the inputfile
+            try:
+                self.cuteldensAtPsi = \
+                            ((idata.cuteldensAt - self.rmaj)/self.rmin)**2
+            except:
+                self.cuteldensAtPsi = 0.
+                
+            # Analytical density profile
+            Ne_modelflag = idata.analytical_tokamak_ne_model
+            self.NeInt = UniBiSplineTestModelNe(idata.rmaj, idata.rmin,
+                                                Ne_modelflag,
+                                                idata.ne_model_parameters)
+
+            # Analytical temperature profile
+            # (the flag for the temperature profile for the moment is not
+            #  needed and might not appear in the configuration files. The
+            #  try loop is added for backward compatibility.)
+            try:
+                Te_modelflag = idata.analytical_tokamak_Te_model
+            except AttributeError:
+                Te_modelflag = 'dummy flag'
+            self.TeInt = UniBiSplineTestModelTe(idata.rmaj, idata.rmin,
+                                                Te_modelflag,
+                                                idata.ne_model_parameters)
+
+            # Magnetic field components set by input file or, in case it isn't,
+            # set by default to a purely toroidal magnetic field
+            if not hasattr(idata, 'BRInt'):
+                self.BRInt = BiSplineTestModelB(0.)
+            else:
+                self.BRInt = BiSplineTestModelB(idata.BRInt)
+            if not hasattr(idata, 'BzInt'):                
+                self.BzInt = BiSplineTestModelB(0.)
+            else:
+                self.BzInt = BiSplineTestModelB(idata.BzInt)
+            if not hasattr(idata, 'BtInt'):            
+                self.BtInt = BiSplineTestModelB(-1.)
+            else:
+                self.BtInt = BiSplineTestModelB(idata.BtInt)
+                
+        # anything else
+        else:
+            msg = "Check input keyword 'analytical_tokamak'."
+            raise ValueError(msg)
+
+        # return from constructor	
+        return
+    
+        # This function loads TORBEAM profile files
+    def __plasma_profile__(self, input_dir, fname):
+
+        """Open the data file specified in the argument string fname in
+        the TORBEAM data directory and read the profile therein.
+        """
+
+        # Account for differences in data formatting
+        if fname == 'volumes.dat':
+            skiprows = ' '
+        else:
+            skiprows = 1
+
+        # Load data
+        path_to_file = input_dir + '/' + fname
+        data = np.loadtxt(path_to_file, skiprows=skiprows)
+
+        # Extract profiles
+        rho_prf = data[:,0]
+        psi_prf = rho_prf**2
+        y_prf = data[:,1]
+            
+        # Close file and return
+        return psi_prf, y_prf
+
+        
+
+#
+# End of class TokamakEquilibrium
+
 
 
 

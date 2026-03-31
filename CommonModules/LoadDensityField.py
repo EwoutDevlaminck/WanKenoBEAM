@@ -128,7 +128,7 @@ def read(data_directory):
     z, R = np.meshgrid(z, R)
 
     # Convert the magnetic field lists into a numpy array
-    ne_val = np.array(ne_val)
+    ne_val = np.array(ne_val)/1.e19  # in 10^19 m^-3
     ne_val.shape = (nptz, nptR) #(data are written with z first)
     ne_val = ne_val.T #(transpose to have R first)
     #

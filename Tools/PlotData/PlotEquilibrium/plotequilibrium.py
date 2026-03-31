@@ -157,6 +157,9 @@ def plot_eq(configfile, nptR=500, nptZ=500, nptPsi=50):
     if idata.equilibrium == 'Tokamak':
         from CommonModules.PlasmaEquilibrium import TokamakEquilibrium
         Eq = TokamakEquilibrium(idata)
+    elif idata.equilibrium == 'Tokamak2D':
+        from CommonModules.PlasmaEquilibrium import TokamakEquilibrium2
+        Eq = TokamakEquilibrium2(idata)
     elif idata.equilibrium == 'Axisymmetric':
         from CommonModules.PlasmaEquilibrium import AxisymmetricEquilibrium
         Eq = AxisymmetricEquilibrium(idata)
@@ -187,7 +190,7 @@ def plot_eq(configfile, nptR=500, nptZ=500, nptPsi=50):
     Bp2d = np.sqrt(BR2d**2 + Bz2d**2)
 
     # The plots depend on the considered case
-    if idata.equilibrium == 'Tokamak':
+    if idata.equilibrium == 'Tokamak' or idata.equilibrium == 'Tokamak2D':
 
         # Print some relevant numbers
         Raxis, Zaxis = Eq.magn_axis_coord_Rz
