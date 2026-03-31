@@ -12,6 +12,7 @@ cdef extern from "math.h":
     double sqrt( double )
     double exp( double )
     double log( double )
+    double floor( double )
 
 
 
@@ -25,24 +26,33 @@ cdef inline linint(double xi, double quant0, double quant1):
    return xi*quant1 + (1.-xi)*quant0
 
 
-cdef find_bin_index(np.ndarray[double, ndim=1] a, double b):
-   # Returns the index of the bin that a point belongs to. This is done by evaluating the point
-   # w.r.t. the bin boundaries provided in a. 
-   # If it lies outside the domain, it is given an index corresponding to a grid that is uniformly
-   # extended beyond the boundaries, allowing for a finer grid to work on when interpolating later on.
+cdef inline int find_bin_index(np.ndarray[double, ndim=1] a, int n, double b):
+   # Returns the index of the bin that a point belongs to. This is done by
+   # evaluating the point w.r.t. the bin boundaries provided in a (length n).
+   # If it lies outside the domain, it is given an index corresponding to a
+   # grid that is uniformly extended beyond the boundaries, allowing for a
+   # finer grid to work on when interpolating later on.
+   # Uses a pure-C binary search (equivalent to np.searchsorted left) to
+   # avoid any Python/NumPy overhead in the hot binning loop.
 
-    idx = np.searchsorted(a, b) - 1  # Find the bin index
+   cdef int lo, hi, mid
 
-    if b < a[0]:  # Extrapolate on the lower end
-        bin_size = a[1] - a[0]  # Use first bin width for extrapolation
-        return int(np.floor((b - a[0]) / bin_size))  # Negative bins
+   if b < a[0]:  # Extrapolate on the lower end
+      return <int>floor((b - a[0]) / (a[1] - a[0]))
 
-    elif b > a[-1]:  # Extrapolate on the upper end
-        bin_size = a[-1] - a[-2]  # Use last bin width for extrapolation
-        return len(a) - 1 + int(np.floor((b - a[-1]) / bin_size))  # Positive bins
+   elif b > a[n-1]:  # Extrapolate on the upper end
+      return n - 1 + <int>floor((b - a[n-1]) / (a[n-1] - a[n-2]))
 
-    return idx
-
+   # Binary search: equivalent to np.searchsorted(a, b, side='left') - 1
+   lo = 0
+   hi = n
+   while lo < hi:
+      mid = (lo + hi) >> 1
+      if a[mid] < b:
+         lo = mid + 1
+      else:
+         hi = mid
+   return lo - 1
 
 
 
@@ -54,8 +64,8 @@ cdef find_bin_index(np.ndarray[double, ndim=1] a, double b):
 # data_sim_NparallelphiN: the same for Nparallel, phiN
 # Wfct: array where the results of the binning will be written, 5 dimensional:
 #       index: 1st --> 1st direction
-#              2nd --> 
-#              3rd --> 
+#              2nd -->
+#              3rd -->
 #              4th --> 4th direction
 #              5th --> 0: data from the binning,
 #                      1: uncertainty
@@ -68,7 +78,7 @@ cdef find_bin_index(np.ndarray[double, ndim=1] a, double b):
 #                   1 --> binning only for unscattered rays
 #                   2 --> binning only for scattered rays
 
-# data_sim_scattered: 
+# data_sim_scattered:
 # index: rays, contains the number of scattering kicks a ray has experienced.
 
 # absorption == 1 --> use absorption binning strategy,
@@ -82,7 +92,7 @@ cdef find_bin_index(np.ndarray[double, ndim=1] a, double b):
 # DEFINE FUNCTION WHICH DOES THE BINNING
 ############################################################################
 cpdef int binning(np.ndarray [double, ndim=3] data_sim,
-                  np.ndarray [double, ndim=2] data_sim_Wfct,               
+                  np.ndarray [double, ndim=2] data_sim_Wfct,
                   np.ndarray [double, ndim=2] data_sim_CorrectionFactor,
                   np.ndarray [double, ndim=2] data_sim_weight,
       	          np.ndarray [double, ndim=5] Wfct,
@@ -91,19 +101,19 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
                   np.ndarray [double, ndim=1] bin3,
                   np.ndarray [double, ndim=1] bin4,
                   np.ndarray [double, ndim=2] time,
-                  int scatterparameter, 
+                  int scatterparameter,
                   np.ndarray [np.int_t, ndim=1] data_sim_scattered,
                   int absorption):
 
-   
+
    """ Crucial binning function. See source file for more information.
    """
 
 
    ############################################################################
    # check if the given parameters do make sense
-   ############################################################################  
-   
+   ############################################################################
+
    cdef int CorrectionFactorGiven
    if data_sim_CorrectionFactor.size > 0:
       CorrectionFactorGiven = 1
@@ -133,34 +143,38 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
    # number of points per ray
    cdef int nPoints = data_sim.shape[2]
 
-   # get number of bins in each direction
+   # get number of bins and bin array lengths in each direction
    cdef int nmbrdir1 = len(bin1)-1
    cdef int nmbrdir2 = len(bin2)-1
    cdef int nmbrdir3 = len(bin3)-1
    cdef int nmbrdir4 = len(bin4)-1
+   cdef int nbin1 = nmbrdir1 + 1
+   cdef int nbin2 = nmbrdir2 + 1
+   cdef int nbin3 = nmbrdir3 + 1
+   cdef int nbin4 = nmbrdir4 + 1
 
-   # Step sizes outside of the binned domain, used for linear interpolation in case 
+   # Step sizes outside of the binned domain, used for linear interpolation in case
    # the ray traverses the edge of the domain. These are also used in the find_bin_index function
    cdef double Deltadir1m = bin1[1] - bin1[0]   # on the minus side
    cdef double Deltadir1p = bin1[-1] - bin1[-2] # on the plus side
-   cdef double Deltadir2m = bin2[1] - bin2[0]   
-   cdef double Deltadir2p = bin2[-1] - bin2[-2]    
-   cdef double Deltadir3m = bin3[1] - bin3[0]   
-   cdef double Deltadir3p = bin3[-1] - bin3[-2]   
-   cdef double Deltadir4m = bin4[1] - bin4[0]   
-   cdef double Deltadir4p = bin4[-1] - bin4[-2] 
+   cdef double Deltadir2m = bin2[1] - bin2[0]
+   cdef double Deltadir2p = bin2[-1] - bin2[-2]
+   cdef double Deltadir3m = bin3[1] - bin3[0]
+   cdef double Deltadir3p = bin3[-1] - bin3[-2]
+   cdef double Deltadir4m = bin4[1] - bin4[0]
+   cdef double Deltadir4p = bin4[-1] - bin4[-2]
 
-   # define some variables which will be needed   
+   # define some variables which will be needed
    # (...0: starting point, ...1: destination point)
    cdef int index
-   cdef double t0, dir10, dir20, dir30, dir40, Wfct0, GrpVel0=1., CorrectionFactor0=1., weight0=1.         
-   cdef double t1, dir11, dir21, dir31, dir41, Wfct1, GrpVel1=1., CorrectionFactor1=1., weight1=1.         
+   cdef double t0, dir10, dir20, dir30, dir40, Wfct0, GrpVel0=1., CorrectionFactor0=1., weight0=1.
+   cdef double t1, dir11, dir21, dir31, dir41, Wfct1, GrpVel1=1., CorrectionFactor1=1., weight1=1.
    cdef double WfctInt
 
    # define variables where the corresponding bin indices can be stored
    cdef int ndir10, ndir20, ndir30, ndir40
    cdef int ndir11, ndir21, ndir31, ndir41
- 
+
    # define variable where the Wfct contribution of a ray in one bin is temporarily stored
    cdef double DeltaWfct
 
@@ -173,15 +187,15 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
 
    # Boolean parameter to skip fragment of a ray if it is completely out of the domain
    cdef int skip_fragment
-    
+
 
    # define temporarily used variables
    cdef double xiUsed      # in order to store the xi which actually is in use
    cdef int whichxiUsed    # in order to store information on which xi is used
                            # 0 --> xidir1, 1 --> xidir2, 2 --> xidir3, 3 --> xidir4
-    
+
                            # in order to temporarily store those quantities
-   cdef double tempWfct, tempGrpVel=1., tempCorrectionFactor=1., tempweight=1.    
+   cdef double tempWfct, tempGrpVel=1., tempCorrectionFactor=1., tempweight=1.
 
    # define variable where the binned rays are counted
    cdef int raycounter = 0
@@ -225,31 +239,31 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
          weight0 = 1.
       else:
          weight0 = data_sim_weight[i,1]
-    
+
       # and calculate the bin indices. the data in bin1 etc are the bin boundaries
-      ndir10 = find_bin_index(bin1, dir10)          
-      ndir20 = find_bin_index(bin2, dir20)             
-      ndir30 = find_bin_index(bin3, dir30)    
-      ndir40 = find_bin_index(bin4, dir40)   
- 
+      ndir10 = find_bin_index(bin1, nbin1, dir10)
+      ndir20 = find_bin_index(bin2, nbin2, dir20)
+      ndir30 = find_bin_index(bin3, nbin3, dir30)
+      ndir40 = find_bin_index(bin4, nbin4, dir40)
+
       # for the first bin, for the moment, the uncertainty to add is 0
       DeltaUncertainty = 0.
-  
-      
+
+
       ############################################################################
       # loop over the ray points
       ############################################################################
       # start with the third line, because in the first, there is the extra information
       # and the first ray point in the second line is already stored in point 0
-      for j in range(1, nPoints):         
+      for j in range(1, nPoints):
          # read the next ray point
-         t1 = time[i,j] 
+         t1 = time[i,j]
          dir11 = data_sim[i,0,j]
          dir21 = data_sim[i,1,j]
          dir31 = data_sim[i,2,j]
          dir41 = data_sim[i,3,j]
          Wfct1 = data_sim_Wfct[i,j]
-  
+
 
          # if Wfct vanishes, this is because the ray tracing has been stopped for some reasons.
          # in this case, don't further consider the recent ray
@@ -264,22 +278,22 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
             weight1 = data_sim_weight[i,j]
 
          # and calculate the bin indices
-         ndir11 = find_bin_index(bin1, dir11)              
-         ndir21 = find_bin_index(bin2, dir21)             
-         ndir31 = find_bin_index(bin3, dir31)        
-         ndir41 = find_bin_index(bin4, dir41)   
+         ndir11 = find_bin_index(bin1, nbin1, dir11)
+         ndir21 = find_bin_index(bin2, nbin2, dir21)
+         ndir31 = find_bin_index(bin3, nbin3, dir31)
+         ndir41 = find_bin_index(bin4, nbin4, dir41)
 
          # At the start, don't skip fragment yet
          skip_fragment = 0
-        
+
 
          ############################################################################
          # loop over intersections with bin boundaries in between the two recent ray
          # points
          ############################################################################
          while True:
-           
-                  
+
+
             ############################################################################
             # if start and end point are in the same bin, the binning can directly be
             # done and one can continue with the next ray point
@@ -304,7 +318,7 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
 
                   Wfct[ndir10,ndir20,ndir30,ndir40,0] += DeltaWfct
                   DeltaUncertainty += DeltaWfct
-                  
+
                # the next starting ray point is the recent end point
                # the bin indices are already the same.
                t0 = t1
@@ -322,7 +336,7 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
             # for all the bins in between both.
             #############################################################################
             # calculate the next intersection with a bin boundary
-            # and therefore calculate the relevant boundaries 
+            # and therefore calculate the relevant boundaries
             # always the boundary which is at least to the right direction of the starting
             # point 0 is taken. Therefore, it is seen if the coordinates of point 1 are
             # superior or not.
@@ -331,7 +345,7 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
 
             # For each direction, follow the same procedure
             if dir11 >= dir10:
-               if ndir11 < 0 or ndir10 > nmbrdir1 -1: 
+               if ndir11 < 0 or ndir10 > nmbrdir1 -1:
                   # Then the fragment has either not entered the binning domain yet
                   # or it was already out of the domain at the start
                   skip_fragment = 1
@@ -358,7 +372,7 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
                   dir1bound = bin1[ndir10]
 
             if dir21 >= dir20:
-               if ndir21 < 0 or ndir20 > nmbrdir2 -1: 
+               if ndir21 < 0 or ndir20 > nmbrdir2 -1:
                   skip_fragment = 1
                elif ndir20 < 0:
                   dir2bound = bin2[0] + (ndir20 + 1)*Deltadir2m
@@ -373,7 +387,7 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
                   dir2bound = bin2[ndir20]
 
             if dir31 >= dir30:
-               if ndir31 < 0 or ndir30 > nmbrdir3 -1: 
+               if ndir31 < 0 or ndir30 > nmbrdir3 -1:
                   skip_fragment = 1
                elif ndir30 < 0:
                   dir3bound = bin3[0] + (ndir30 + 1)*Deltadir3m
@@ -388,7 +402,7 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
                   dir3bound = bin3[ndir30]
 
             if dir41 >= dir40:
-               if ndir41 < 0 or ndir40 > nmbrdir4 -1: 
+               if ndir41 < 0 or ndir40 > nmbrdir4 -1:
                   skip_fragment = 1
                elif ndir40 < 0:
                   dir4bound = bin4[0] + (ndir40 + 1)*Deltadir4m
@@ -424,14 +438,14 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
             # xi... along the ray are calculated giving the intersection with the
             # next bin boundary in ... direction. xi... = 0 corresponds to point 0,
             # xi... = 1 gives point 1.
-            # If the coordinates are the same, the xi cannot be calculated. Then  
+            # If the coordinates are the same, the xi cannot be calculated. Then
             # it is set to 20 which is a value > 1 and thus this xi for sure is not
-            # the next one (because even not in between point 0 and point 1) and 
+            # the next one (because even not in between point 0 and point 1) and
             # ignored.
             if dir11-dir10 != 0.:
                xidir1 = (dir1bound-dir10)/(dir11-dir10)
             else:
-               xidir1 = 20.   
+               xidir1 = 20.
             if dir21-dir20 != 0.:
                xidir2 = (dir2bound-dir20)/(dir21-dir20)
             else:
@@ -446,7 +460,7 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
                xidir4 = 20.
 
 
-            # do the binning for the recent bin (which means in between point 0 and 
+            # do the binning for the recent bin (which means in between point 0 and
             # an intermediate point at the next smallest reasonable xi)
             # look for the smallest reasonable xi and do the binning for the
             # corresponding part of the ray. For further explanation on the binning
@@ -465,10 +479,10 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
                whichxiUsed = 3
 
             # if there was no reasonable xi this means, that there was some problem due to rounding issues which occurs
-            # whenever a ray is oriented exactly along a bin boundary and thus practically only for the vacuum case 
+            # whenever a ray is oriented exactly along a bin boundary and thus practically only for the vacuum case
             # and the central ray.
-            else:  
-               # print a warning message. 
+            else:
+               # print a warning message.
                dist = t1-t0
                print("WARNING: a problem in the binning occured. For ray number=%i, dest. point number=%i. dist=%f[gen.time unit] could not be binned.\n" %(i,j-1,dist))
                sys.stdout.flush()
@@ -489,7 +503,7 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
                break
 
 
-            # compute the intermediate quantities and save in temporare variables 
+            # compute the intermediate quantities and save in temporare variables
             tempWfct = linint(xiUsed, Wfct0, Wfct1)
             tempCorrectionFactor = linint(xiUsed, CorrectionFactor0, CorrectionFactor1)
             tempweight = linint(xiUsed, weight0, weight1)
@@ -500,17 +514,17 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
                DeltaWfct = dist * (Wfct0+tempWfct) / 2. * (CorrectionFactor0+tempCorrectionFactor)/2. * (weight0+tempweight)/2.
             else:   # for absorption different computation
                if Wfct1 > 0.:
-                  WfctInt = Wfct0 * exp(log(Wfct1/Wfct0)*xiUsed) 
+                  WfctInt = Wfct0 * exp(log(Wfct1/Wfct0)*xiUsed)
                else:
                   WfctInt = 0.
                DeltaWfct = (Wfct0 - WfctInt) * (weight0+tempweight)/2.
-             
+
             # if no problem occured, see if indices are inside the boundaries and if yes do the binning.
             if ndir10 >= 0 and ndir10 < nmbrdir1 \
                 and ndir20 >= 0 and ndir20 < nmbrdir2 \
                 and ndir30 >= 0 and ndir30 < nmbrdir3 \
                 and ndir40 >= 0 and ndir40 < nmbrdir4:
-                # If this is the case, the -now cut from start point 0 to a boundary- 
+                # If this is the case, the -now cut from start point 0 to a boundary-
                 # fragment is in the domain.
 
                Wfct[ndir10,ndir20,ndir30,ndir40,0] += DeltaWfct
@@ -530,32 +544,30 @@ cpdef int binning(np.ndarray [double, ndim=3] data_sim,
                 Wfct0 = WfctInt
             CorrectionFactor0 = linint(xiUsed, CorrectionFactor0, CorrectionFactor1)
             weight0 = linint(xiUsed, weight0, weight1)
-          
+
             # and the bin index of the recent bin is moved into the right neighbour bin.
             # therefore, see which bin index has to be changed
             if whichxiUsed == 0:
                if dir11 > dir10:
                   ndir10 += 1
                else:
-                  ndir10 -= 1               
+                  ndir10 -= 1
             elif whichxiUsed == 1:
                if dir21 > dir20:
                   ndir20 += 1
                else:
-                  ndir20 -= 1    
+                  ndir20 -= 1
             elif whichxiUsed == 2:
                if dir31 > dir30:
                   ndir30 += 1
                else:
-                  ndir30 -= 1    
+                  ndir30 -= 1
             elif whichxiUsed == 3:
                if dir41 > dir40:
                   ndir40 += 1
                else:
-                  ndir40 -= 1    
+                  ndir40 -= 1
 
-            
+
    # return the number of rays binned
    return raycounter
-
-
