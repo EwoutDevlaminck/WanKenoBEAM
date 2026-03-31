@@ -3,12 +3,11 @@ ALL RELEVANT PARAMETERS CAN BE CHOSEN BELOW. THE DATA IS LOADED AND SAVED FROM
 AND TO THE FILES CHOSEN AMONG THE PARAMETERS.
 """
 
-# Load standard modules 
+# Load standard modules
 import sys
 import os
-import re 
+import re
 import glob
-import math
 import h5py
 import numpy as np
 # Load local modules
@@ -19,10 +18,23 @@ from Binning.modules.compute_normalisationfactor import compute_norm_factor
 from scipy.io import loadmat
 
 
+def _select_weight(component, data_sim_NxNyNz=None, data_sim_VxVyVz=None,
+                   data_sim_Nparallel=None, data_sim_phiN=None, data_sim_Nperp=None):
+    """Return the weight array slice for a named velocity/refractive-index component."""
+    if component == "Nx":       return data_sim_NxNyNz[:,0,:]
+    elif component == "Ny":     return data_sim_NxNyNz[:,1,:]
+    elif component == "Nz":     return data_sim_NxNyNz[:,2,:]
+    elif component == "Vx":     return data_sim_VxVyVz[:,0,:]
+    elif component == "Vy":     return data_sim_VxVyVz[:,1,:]
+    elif component == "Vz":     return data_sim_VxVyVz[:,2,:]
+    elif component == "Nparallel": return data_sim_Nparallel
+    elif component == "phiN":   return data_sim_phiN
+    elif component == "Nperp":  return data_sim_Nperp
+    raise ValueError(f"Unknown velocity component: {component}")
 
 
 ############################################################################
-# BELOW: A FUNCTION WHICH DOES THE BINNING IS PROVIDED. 
+# BELOW: A FUNCTION WHICH DOES THE BINNING IS PROVIDED.
 # IT IS CALLED WHEN THIS FILE IS EXECUTED AND ALSO CAN BE CALLED
 # FROM OTHER PIECES OF PYTHON CODE. AS PARAMETER, IT TAKES AN idata
 # INSTANCE WITH ALL RELEVANT PARAMETERS.
@@ -31,61 +43,54 @@ def binning_pyinterface(idata):
 
     # MODIFY INPUT PARAMETERS IF NEEDED
     ############################################################################
-   
-    # see if outputfilename is defined. 
+
+    # see if outputfilename is defined.
     # if not, just attach _binned to inputfilename
-    try:
-        outputfilename = idata.outputfilename
-    except:
-        outputfilename = idata.inputfilename + '_binned'
+    outputfilename = getattr(idata, 'outputfilename', idata.inputfilename + '_binned')
 
-   
-    if idata.storeVelocityField == True:
-        VelocityComponentsToStore = idata.VelocityComponentsToStore
-    else:
-        VelocityComponentsToStore = []
+    VelocityComponentsToStore = idata.VelocityComponentsToStore if idata.storeVelocityField else []
 
-
-    # ALLOCATE MEMORY WHERE THE RESULTS CAN BE WRITTEN AND CALL THE 
+    # ALLOCATE MEMORY WHERE THE RESULTS CAN BE WRITTEN AND CALL THE
     # CYTHON BINNING FUNCTION
     ############################################################################
 
     # see how many directions are needed in the input file.
     if len(idata.WhatToResolve) > 4:
         print('THE MAXIMUM NUMBER OF DIMENSIONS 4 IS EXCEEDED.\n')
-        raise
-    try: 
-        uniform_bins = idata.uniform_bins
-    except:
-        uniform_bins = True
+        raise ValueError('Too many dimensions in WhatToResolve')
 
-    if uniform_bins == True:
-    # put one bin in directions not in use
-    # and the boundaries around zero (because the data_sim-values will be 0 for those dimensions)
+    uniform_bins = getattr(idata, 'uniform_bins', True)
+
+    # All variables needed for either WhatToResolve or VelocityComponentsToStore
+    all_vars = set(idata.WhatToResolve) | set(VelocityComponentsToStore)
+
+    if uniform_bins:
+        # put one bin in directions not in use
+        # and the boundaries around zero (because the data_sim-values will be 0 for those dimensions)
         nmbr = np.empty([4], dtype=int)
-        min = np.empty([4])
-        max = np.empty([4])
-        for i in range(0,4):
+        bin_min = np.empty([4])
+        bin_max = np.empty([4])
+        for i in range(4):
             if i < len(idata.nmbr):
                 nmbr[i] = idata.nmbr[i]
-                min[i] = idata.min[i]
-                max[i] = idata.max[i]
-                if min[i] > max[i]:
-                    print('ERROR: lower boundary larger than the upper one for %s\n' %(idata.WhatToResolve[i]))
-                    raise
+                bin_min[i] = idata.min[i]
+                bin_max[i] = idata.max[i]
+                if bin_min[i] > bin_max[i]:
+                    print('ERROR: lower boundary larger than the upper one for %s\n' % idata.WhatToResolve[i])
+                    raise ValueError('Invalid bin boundaries')
             else:
                 nmbr[i] = 1
-                min[i] = -1.
-                max[i] = +1.
+                bin_min[i] = -1.
+                bin_max[i] = +1.
     else:
         bins = np.empty([4], dtype=np.ndarray)
         nmbr = np.empty([4], dtype=int)
-        for i in range(0,4):
+        for i in range(4):
             if i < len(idata.bins):
-                if len(idata.bins[i])==0:
+                if len(idata.bins[i]) == 0:
                     # We want to use the simple description of uniform bins anyway, nothing was provided for this dimension
                     nmbr[i] = idata.nmbr[i]
-                    bins[i] = np.linspace(idata.min[i],idata.max[i],idata.nmbr[i]+1)
+                    bins[i] = np.linspace(idata.min[i], idata.max[i], idata.nmbr[i]+1)
                 else:
                     if isinstance(idata.bins[i][0], str):
                         # Then we take the bins from a file, and the location and name are provided
@@ -93,757 +98,409 @@ def binning_pyinterface(idata):
                         bins[i] = grids[idata.bins[i][1]][0,0][0]
                     else:
                         bins[i] = idata.bins[i]
-
-                    nmbr[i] = len(bins[i])-1
+                    nmbr[i] = len(bins[i]) - 1
             else:
-                bins[i] = np.linspace(-1.,1.,2)
+                bins[i] = np.linspace(-1., 1., 2)
                 nmbr[i] = 1
 
-    # if only the total amplitude needs to be computed do this directly
-    if idata.storeWfct == True:
-        WfctUnscattered = np.zeros(np.append(nmbr,2))
-    if idata.storeVelocityField == True:
-        VelocityFieldUnscattered = np.zeros(np.append(nmbr,[len(VelocityComponentsToStore),2]))
+    # Allocate output arrays
+    if idata.storeWfct:
+        WfctUnscattered = np.zeros(np.append(nmbr, 2))
+    if idata.storeVelocityField:
+        VelocityFieldUnscattered = np.zeros(np.append(nmbr, [len(VelocityComponentsToStore), 2]))
+    if idata.storeAbsorption:
+        AbsorptionUnscattered = np.zeros(np.append(nmbr, 2))
 
-    if idata.storeAbsorption == True:
-        AbsorptionUnscattered = np.zeros(np.append(nmbr,2))
-
-    # if scattered rays are also needed explicitly
-    if idata.computeAmplitude == True or idata.computeScatteringEffect == True:
-        if idata.storeWfct == True:
-            WfctScattered = np.zeros(np.append(nmbr,2))
-        if idata.storeVelocityField == True:
-            VelocityFieldScattered = np.zeros(np.append(nmbr,[len(VelocityComponentsToStore),2]))
-        if idata.storeAbsorption == True:
-            AbsorptionScattered = np.zeros(np.append(nmbr,2))
-
-   
+    if idata.computeAmplitude or idata.computeScatteringEffect:
+        if idata.storeWfct:
+            WfctScattered = np.zeros(np.append(nmbr, 2))
+        if idata.storeVelocityField:
+            VelocityFieldScattered = np.zeros(np.append(nmbr, [len(VelocityComponentsToStore), 2]))
+        if idata.storeAbsorption:
+            AbsorptionScattered = np.zeros(np.append(nmbr, 2))
 
     nmbrRaysScattered = 0
     nmbrRaysUnscattered = 0
-       
+
 
     # READ BEAM PARAMETERS FROM THE INPUT FILE
     ############################################################################
     if idata.nmbrFiles == 'all':
-            # Pattern: <output_dir>/<output_filename>_file#.hdf5
+        # Pattern: <input_dir>/<input_filename>_file#.hdf5
         pattern = os.path.join(idata.inputdirectory, f"{idata.inputfilename}_file*.hdf5")
-
-        # Get list of matching files
         existing_files = glob.glob(pattern)
-
-        # Extract numeric indices from filenames
-        indices = []
         pattern_re = re.compile(f"{re.escape(idata.inputfilename)}_file(\\d+)\\.hdf5")
-        for file in existing_files:
-            match = pattern_re.search(os.path.basename(file))
-            if match:
-                indices.append(int(match.group(1)))
-        indices.sort()
-        nmbrFiles = len(indices)
+        indices = sorted(
+            int(m.group(1))
+            for f in existing_files
+            for m in [pattern_re.search(os.path.basename(f))]
+            if m
+        )
     else:
         indices = idata.nmbrFiles
-        nmbrFiles = len(indices)
-    print("NUMBER OF FILES TO BE PROCESSED: %i\n" %(nmbrFiles))
+    print("NUMBER OF FILES TO BE PROCESSED: %i\n" % len(indices))
 
-    for i in indices:
-        # choose the right filename
-        filename = idata.inputdirectory + idata.inputfilename + '_file%i.hdf5' %(i)
-    
-        print("loading file %s ...\n" %(filename))
-        sys.stdout.flush() 
+    for file_idx in indices:
+        filename = idata.inputdirectory + idata.inputfilename + '_file%i.hdf5' % file_idx
+        print("loading file %s ...\n" % filename)
+        sys.stdout.flush()
 
-        # open file
-        fid = h5py.File(filename,'r')
-        if idata.correctionfactor == True:
-            data_sim_CorrectionFactor = fid.get('TracesCorrectionFactor')[()]
-        else:
-            data_sim_CorrectionFactor = np.empty([0,0])
+        with h5py.File(filename, 'r') as fid:
+            data_sim_CorrectionFactor = fid.get('TracesCorrectionFactor')[()] if idata.correctionfactor else np.empty([0,0])
 
-        data_sim_XYZ = fid.get('TracesXYZ')[()]
-        data_sim_Wfct = fid.get('TracesWfct')[()]
-        data_sim_nmbrscattevents = fid.get('TracesNumberScattEvents')[()]
+            data_sim_XYZ              = fid.get('TracesXYZ')[()]
+            data_sim_Wfct             = fid.get('TracesWfct')[()]
+            data_sim_nmbrscattevents  = fid.get('TracesNumberScattEvents')[()]
 
-        nmbrRaysToUse = data_sim_XYZ.shape[0]
-        nmbrPointsPerRay = data_sim_XYZ.shape[2]
+            nmbrRaysToUse    = data_sim_XYZ.shape[0]
+            nmbrPointsPerRay = data_sim_XYZ.shape[2]
 
-        # see what data is needed:
-        if len(set(idata.WhatToResolve).intersection(set(['Nx','Ny','Nz']))) \
-                + len(set(VelocityComponentsToStore).intersection(set(['Nx','Ny','Nz']))) > 0:
-            data_sim_NxNyNz = fid.get('TracesNxNyNz')[()]
+            # Load only the arrays that are actually needed
+            if all_vars & {'Nx', 'Ny', 'Nz'}:
+                data_sim_NxNyNz = fid.get('TracesNxNyNz')[()]
+            if all_vars & {'Vx', 'Vy', 'Vz'}:
+                data_sim_VxVyVz = fid.get('TracesGroupVelocity')[()]
+            if all_vars & {'Psi', 'rho'}:
+                data_sim_Psi = fid.get('TracesPsi')[()]
+            if 'Theta' in all_vars:
+                data_sim_Theta = fid.get('TracesTheta')[()]
+            if 'Nparallel' in all_vars:
+                data_sim_Nparallel = fid.get('TracesNparallel')[()]
+            if 'phiN' in all_vars:
+                data_sim_phiN = fid.get('TracesphiN')[()]
+            if 'Nperp' in all_vars:
+                data_sim_Nperp = fid.get('TracesNperpendicular')[()]
 
-        if len(set(idata.WhatToResolve).intersection(set(['Vx','Vy','Vz']))) \
-                + len(set(VelocityComponentsToStore).intersection(set(['Vx','Vy','Vz']))) > 0:
-            data_sim_VxVyVz = fid.get('TracesGroupVelocity')[()]
-           
-        if 'Psi' in idata.WhatToResolve or 'rho' in idata.WhatToResolve:
-            data_sim_Psi = fid.get('TracesPsi')[()]
-        
-        if 'Theta' in idata.WhatToResolve:
-            data_sim_Theta = fid.get('TracesTheta')[()]
+            # Use time stored in file if available, otherwise reconstruct from timestep
+            if "TracesTime" in fid:
+                data_sim_time = fid.get("TracesTime")[()]
+                print('time along the rays was found and is used.\n')
+            else:
+                timestep = fid.get("timestep")[()]
+                data_sim_time = np.empty([nmbrRaysToUse, nmbrPointsPerRay])
+                for k in range(nmbrRaysToUse):
+                    data_sim_time[k,:] = np.linspace(0., (nmbrPointsPerRay-1)*timestep, nmbrPointsPerRay)
 
-        if 'Nparallel' in idata.WhatToResolve:
-            data_sim_Nparallel = fid.get('TracesNparallel')[()]
+            # Read antenna / beam parameters
+            _antenna_keys = [
+                "Mode", "FreqGHz", "antennapolangle", "antennatorangle",
+                "rayStartX", "rayStartY", "rayStartZ",
+                "beamwidth1", "beamwidth2",
+                "curvatureradius1", "curvatureradius2",
+                "centraleta1", "centraleta2",
+            ]
+            file_params = {key: fid.get(key)[()] for key in _antenna_keys}
 
-        if 'phiN' in idata.WhatToResolve:
-            data_sim_phiN = fid.get('TracesphiN')[()]
+        if file_idx == indices[0]:
+            sigma            = file_params["Mode"]
+            freq             = file_params["FreqGHz"]
+            antennapolangle  = file_params["antennapolangle"]
+            antennatorangle  = file_params["antennatorangle"]
+            rayStartX        = file_params["rayStartX"]
+            rayStartY        = file_params["rayStartY"]
+            rayStartZ        = file_params["rayStartZ"]
+            beamwidth1       = file_params["beamwidth1"]
+            beamwidth2       = file_params["beamwidth2"]
+            curvatureradius1 = file_params["curvatureradius1"]
+            curvatureradius2 = file_params["curvatureradius2"]
+            centraleta1      = file_params["centraleta1"]
+            centraleta2      = file_params["centraleta2"]
 
-        if 'Nperp' in idata.WhatToResolve:
-            data_sim_Nperp = fid.get('TracesNperpendicular')[()]
-    
-        # see if time is given.
-        # if not, reconstruct it using the timestep
-        try:
-            data_sim_time = fid.get("TracesTime")[()]
-            print('time along the rays was found and is used.\n')
-        except:
-            timestep = fid.get("timestep")[()]
-            data_sim_time = np.empty([nmbrRaysToUse,nmbrPointsPerRay])
-            for k in range(0,nmbrRaysToUse):
-                data_sim_time[k,:] = np.linspace(0.,(nmbrPointsPerRay-1)*timestep,nmbrPointsPerRay)
-
-        if i == 0:
-            sigma = fid.get("Mode")[()]
-            freq = fid.get("FreqGHz")[()]
-            antennapolangle = fid.get("antennapolangle")[()]
-            antennatorangle = fid.get("antennatorangle")[()]
-            rayStartX = fid.get("rayStartX")[()]
-            rayStartY = fid.get("rayStartY")[()]
-            rayStartZ = fid.get("rayStartZ")[()]
-            beamwidth1 = fid.get("beamwidth1")[()]
-            beamwidth2 = fid.get("beamwidth2")[()]
-            curvatureradius1 = fid.get("curvatureradius1")[()]
-            curvatureradius2 = fid.get("curvatureradius2")[()]
-            centraleta1 = fid.get("centraleta1")[()]
-            centraleta2 = fid.get("centraleta2")[()]
-            
             # see if the normalisation factor for energy flow is needed or not
-            try:
-                InputPower = idata.InputPower
+            InputPower = getattr(idata, 'InputPower', None)
+            if InputPower is not None:
                 NormFactor = InputPower / compute_norm_factor(freq,
                                                               beamwidth1, beamwidth2,
                                                               curvatureradius1, curvatureradius2,
                                                               centraleta1, centraleta2)
-                print("Input power is %.3fMW\n" %(InputPower))
-            except:
+                print("Input power is %.3fMW\n" % InputPower)
+            else:
                 NormFactor = 1.
                 print("Normalisation such that central electric field on antenna is 1.\n")
         else:
-            if sigma != fid.get("Mode")[()] or \
-                    freq != fid.get("FreqGHz")[()] or \
-                    antennapolangle != fid.get("antennapolangle")[()] or \
-                    antennatorangle != fid.get("antennatorangle")[()] or \
-                    rayStartX != fid.get("rayStartX")[()] or \
-                    rayStartY != fid.get("rayStartY")[()] or \
-                    rayStartZ != fid.get("rayStartZ")[()] or \
-                    beamwidth1 != fid.get("beamwidth1")[()] or \
-                    beamwidth2 != fid.get("beamwidth2")[()] or \
-                    curvatureradius1 != fid.get("curvatureradius1")[()] or \
-                    curvatureradius2 != fid.get("curvatureradius2")[()] or \
-                    centraleta1 != fid.get("centraleta1")[()] or \
-                    centraleta2 != fid.get("centraleta2")[()]:
-                   
+            ref = dict(Mode=sigma, FreqGHz=freq,
+                       antennapolangle=antennapolangle, antennatorangle=antennatorangle,
+                       rayStartX=rayStartX, rayStartY=rayStartY, rayStartZ=rayStartZ,
+                       beamwidth1=beamwidth1, beamwidth2=beamwidth2,
+                       curvatureradius1=curvatureradius1, curvatureradius2=curvatureradius2,
+                       centraleta1=centraleta1, centraleta2=centraleta2)
+            if any(file_params[k] != ref[k] for k in ref):
                 print("ATTENTION: THERE IS A PROBLEM HERE, NOT ALL INPUT FILES AGREE IN ALL PARAMETERS.\n")
                 sys.stdout.flush()
-                raise
+                raise ValueError('Inconsistent antenna parameters across input files')
 
-        
-        # close file
-        fid.close()
-
-        # and compose data for the binning routine
-        data_sim = np.zeros([nmbrRaysToUse,4,nmbrPointsPerRay])
-        
-        for i in range(0,len(idata.WhatToResolve)):
-            if idata.WhatToResolve[i] == 'X':
-                data_sim[:,i,:] = data_sim_XYZ[:,0,:].copy()
-            elif idata.WhatToResolve[i] == 'Y':
-                data_sim[:,i,:] = data_sim_XYZ[:,1,:].copy()
-            elif idata.WhatToResolve[i] == 'Z':
-                data_sim[:,i,:] = data_sim_XYZ[:,2,:].copy()
-            elif idata.WhatToResolve[i] == 'Nx':
-                data_sim[:,i,:] = data_sim_NxNyNz[:,0,:].copy()
-            elif idata.WhatToResolve[i] == 'Ny':
-                data_sim[:,i,:] = data_sim_NxNyNz[:,1,:].copy()
-            elif idata.WhatToResolve[i] == 'Nz':
-                data_sim[:,i,:] = data_sim_NxNyNz[:,2,:].copy()
-            elif idata.WhatToResolve[i] == 'Nparallel':
-                data_sim[:,i,:] = data_sim_Nparallel[:,:].copy()
-            elif idata.WhatToResolve[i] == 'phiN':
-                data_sim[:,i,:] = data_sim_phiN[:,:].copy()
-            elif idata.WhatToResolve[i] == 'Nperp':
-                data_sim[:,i,:] = data_sim_Nperp[:,:].copy()
-            elif idata.WhatToResolve[i] == 'Vx':
-                data_sim[:,i,:] = data_sim_VxVyVz[:,0,:].copy()
-            elif idata.WhatToResolve[i] == 'Vy':
-                data_sim[:,i,:] = data_sim_VxVyVz[:,1,:].copy()
-            elif idata.WhatToResolve[i] == 'Vz':
-                data_sim[:,i,:] = data_sim_VxVyVz[:,2,:].copy()
-            elif idata.WhatToResolve[i] == 'Psi':
-                data_sim[:,i,:] = data_sim_Psi.copy()
-            elif idata.WhatToResolve[i] == 'rho':
-                data_sim[:,i,:] = np.sqrt(data_sim_Psi).copy()
-            elif idata.WhatToResolve[i] == 'Theta':
-                data_sim[:,i,:] = data_sim_Theta.copy()
-            elif idata.WhatToResolve[i] == 'R':
-                data_sim[:,i,:] = np.sqrt(data_sim_XYZ[:,0,:]**2+data_sim_XYZ[:,1,:]**2).copy() 
+        # Compose data_sim from WhatToResolve
+        data_sim = np.zeros([nmbrRaysToUse, 4, nmbrPointsPerRay])
+        for dim, var in enumerate(idata.WhatToResolve):
+            if var == 'X':          data_sim[:,dim,:] = data_sim_XYZ[:,0,:]
+            elif var == 'Y':        data_sim[:,dim,:] = data_sim_XYZ[:,1,:]
+            elif var == 'Z':        data_sim[:,dim,:] = data_sim_XYZ[:,2,:]
+            elif var == 'Nx':       data_sim[:,dim,:] = data_sim_NxNyNz[:,0,:]
+            elif var == 'Ny':       data_sim[:,dim,:] = data_sim_NxNyNz[:,1,:]
+            elif var == 'Nz':       data_sim[:,dim,:] = data_sim_NxNyNz[:,2,:]
+            elif var == 'Nparallel':data_sim[:,dim,:] = data_sim_Nparallel
+            elif var == 'phiN':     data_sim[:,dim,:] = data_sim_phiN
+            elif var == 'Nperp':    data_sim[:,dim,:] = data_sim_Nperp
+            elif var == 'Vx':       data_sim[:,dim,:] = data_sim_VxVyVz[:,0,:]
+            elif var == 'Vy':       data_sim[:,dim,:] = data_sim_VxVyVz[:,1,:]
+            elif var == 'Vz':       data_sim[:,dim,:] = data_sim_VxVyVz[:,2,:]
+            elif var == 'Psi':      data_sim[:,dim,:] = data_sim_Psi
+            elif var == 'rho':      data_sim[:,dim,:] = np.sqrt(data_sim_Psi)
+            elif var == 'Theta':    data_sim[:,dim,:] = data_sim_Theta
+            elif var == 'R':        data_sim[:,dim,:] = np.sqrt(data_sim_XYZ[:,0,:]**2 + data_sim_XYZ[:,1,:]**2)
             else:
                 print('IN THE WhatToResolve LIST IN THE INPUT FILE IS A NON-SUPPORTED ELEMENT. FIX THAT.\n')
-                raise
-       
+                raise ValueError(f'Unsupported WhatToResolve element: {var}')
 
-        # Wfct 
-        data_sim_Wfct = data_sim_Wfct * NormFactor
-        # information, if rays have been scattered or not
-        data_sim_scattered = data_sim_nmbrscattevents.copy()   
+        data_sim_Wfct     = data_sim_Wfct * NormFactor
+        data_sim_scattered = data_sim_nmbrscattevents.copy()
 
-     
-                    
+        # Build the weight arrays dict for _select_weight calls this iteration
+        _weight_data = {}
+        if all_vars & {'Nx', 'Ny', 'Nz'}:       _weight_data['data_sim_NxNyNz']   = data_sim_NxNyNz
+        if all_vars & {'Vx', 'Vy', 'Vz'}:       _weight_data['data_sim_VxVyVz']   = data_sim_VxVyVz
+        if 'Nparallel' in all_vars:              _weight_data['data_sim_Nparallel'] = data_sim_Nparallel
+        if 'phiN' in all_vars:                   _weight_data['data_sim_phiN']      = data_sim_phiN
+        if 'Nperp' in all_vars:                  _weight_data['data_sim_Nperp']     = data_sim_Nperp
+
+        # Define a single dispatch function that hides the uniform/nonuniform choice
+        # for the rest of this file's processing.
+        if uniform_bins:
+            def _run_binning(weight, result, scatter_param, absorb):
+                return binning(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
+                               weight, result,
+                               bin_min[0], bin_max[0], bin_min[1], bin_max[1],
+                               bin_min[2], bin_max[2], bin_min[3], bin_max[3],
+                               nmbr[0], nmbr[1], nmbr[2], nmbr[3],
+                               data_sim_time, scatter_param, data_sim_scattered, absorb)
+        else:
+            def _run_binning(weight, result, scatter_param, absorb):
+                return binning_nonuni(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
+                                      weight, result,
+                                      bins[0], bins[1], bins[2], bins[3],
+                                      data_sim_time, scatter_param, data_sim_scattered, absorb)
+
+        # BINNING UNSCATTERED RAYS
+        ########################################################################
         print("BINNING UNSCATTERED RAYS.\n")
-        if idata.storeWfct == True:
+        if idata.storeWfct:
             print("BINNING WITH WEIGHT 1.\n")
             sys.stdout.flush()
-            # and do the binning 
-            if uniform_bins == True:
-                tmpnmbrrays = binning(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                    np.empty([0,0]),
-                                    WfctUnscattered,
-                                    min[0], max[0], min[1], max[1], min[2], max[2], min[3], max[3],
-                                    nmbr[0], nmbr[1], nmbr[2], nmbr[3],
-                                    data_sim_time,
-                                    1,   # binning unscattered rays
-                                    data_sim_scattered,
-                                    0)    # not the absorption binning scheme
-            else:
-                tmpnmbrrays = binning_nonuni(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                    np.empty([0,0]),
-                                    WfctUnscattered,
-                                    bins[0], bins[1], bins[2], bins[3],
-                                    data_sim_time,
-                                    1,   # binning unscattered rays
-                                    data_sim_scattered,
-                                    0)
+            tmpnmbrrays = _run_binning(np.empty([0,0]), WfctUnscattered, 1, 0)
 
-        # maybe also for the velocity field
-        if idata.storeVelocityField == True:
-            for k in range(0,len(VelocityComponentsToStore)):
-                print("BINNING WITH WEIGHT %s.\n" %(VelocityComponentsToStore[k]))
+        if idata.storeVelocityField:
+            for k, comp in enumerate(VelocityComponentsToStore):
+                print("BINNING WITH WEIGHT %s.\n" % comp)
                 sys.stdout.flush()
-                # choose the weight
-                if VelocityComponentsToStore[k] == "Nx":
-                    weight = data_sim_NxNyNz[:,0,:]
-                elif VelocityComponentsToStore[k] == "Ny":
-                    weight = data_sim_NxNyNz[:,1,:]
-                elif VelocityComponentsToStore[k] == "Nz":
-                    weight = data_sim_NxNyNz[:,2,:]
-                elif VelocityComponentsToStore[k] == "Vx":
-                    weight = data_sim_VxVyVz[:,0,:]
-                elif VelocityComponentsToStore[k] == "Vy":
-                    weight = data_sim_VxVyVz[:,1,:]
-                elif VelocityComponentsToStore[k] == "Vz":
-                    weight = data_sim_VxVyVz[:,2,:]
-                elif VelocityComponentsToStore[k] == "Nparallel":
-                    weight = data_sim_Nparallel[:,:]
-                elif VelocityComponentsToStore[k] == "phiN":
-                    weight = data_sim_phiN[:,:]
-                elif VelocityComponentsToStore[k] == "Nperp":
-                    weight = data_sim_Nperp[:,:]
+                tmpnmbrrays = _run_binning(_select_weight(comp, **_weight_data),
+                                           VelocityFieldUnscattered[:,:,:,:,k,:], 1, 0)
 
-                if uniform_bins == True:
-                    tmpnmbrrays = binning(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                        weight,
-                                        VelocityFieldUnscattered[:,:,:,:,k,:],
-                                        min[0], max[0], min[1], max[1], min[2], max[2], min[3], max[3],
-                                        nmbr[0], nmbr[1], nmbr[2], nmbr[3],
-                                        data_sim_time,
-                                        1,         # binning unscattered rays
-                                        data_sim_scattered,
-                                        0)     # not the absorption binning scheme
-                else:
-                    tmpnmbrrays = binning_nonuni(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                        weight,
-                                        VelocityFieldUnscattered[:,:,:,:,k,:],
-                                        bins[0], bins[1], bins[2], bins[3],
-                                        data_sim_time,
-                                        1,         # binning unscattered rays
-                                        data_sim_scattered,
-                                        0)
-
-                
-
-        if idata.storeAbsorption == True:
+        if idata.storeAbsorption:
             print("BINNING WITH ABSORPTION WITH WEIGHT 1.\n")
             sys.stdout.flush()
-            # and do the binning 
-            if uniform_bins == True:
-                tmpnmbrrays = binning(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                    np.empty([0,0]),
-                                    AbsorptionUnscattered,
-                                    min[0], max[0], min[1], max[1], min[2], max[2], min[3], max[3],
-                                    nmbr[0], nmbr[1], nmbr[2], nmbr[3],
-                                    data_sim_time,
-                                    1,   # binning unscattered rays
-                                    data_sim_scattered,
-                                    1)   # absorption scheme
-            else:
-                tmpnmbrrays = binning_nonuni(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                    np.empty([0,0]),
-                                    AbsorptionUnscattered,
-                                    bins[0], bins[1], bins[2], bins[3],
-                                    data_sim_time,
-                                    1,   # binning unscattered rays
-                                    data_sim_scattered,
-                                    1)
-    
+            tmpnmbrrays = _run_binning(np.empty([0,0]), AbsorptionUnscattered, 1, 1)
 
-        print('%i unscattered rays have been binned, %i available in total.\n' %(tmpnmbrrays, nmbrRaysToUse))
+        print('%i unscattered rays have been binned, %i available in total.\n' % (tmpnmbrrays, nmbrRaysToUse))
         nmbrRaysUnscattered += tmpnmbrrays
 
-        # see if also the scattered rays are needed
-        if idata.computeAmplitude == True or idata.computeScatteringEffect == True:
+        # BINNING SCATTERED RAYS
+        ########################################################################
+        if idata.computeAmplitude or idata.computeScatteringEffect:
             print("BINNING SCATTERED RAYS.\n")
-            
-            if idata.storeWfct == True:
+
+            if idata.storeWfct:
                 print("BINNING WITH WEIGHT 1.\n")
                 sys.stdout.flush()
-                # and do the binning 
-                if uniform_bins == True:
-                    tmpnmbrrays = binning(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                      np.empty([0,0]),
-                                      WfctScattered,
-                                      min[0], max[0], min[1], max[1], min[2], max[2], min[3], max[3],
-                                      nmbr[0], nmbr[1], nmbr[2], nmbr[3],
-                                      data_sim_time,
-                                      2,   # binning scattered rays
-                                      data_sim_scattered,
-                                      0)
-                else:
+                tmpnmbrrays = _run_binning(np.empty([0,0]), WfctScattered, 2, 0)
 
-                    tmpnmbrrays = binning_nonuni(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                      np.empty([0,0]),
-                                      WfctScattered,
-                                      bins[0], bins[1], bins[2], bins[3],
-                                      data_sim_time,
-                                      2,   # binning scattered rays
-                                      data_sim_scattered,
-                                      0)
-                
-
-
-            # maybe also for the velocity field
-            if idata.storeVelocityField == True:
-                for k in range(0,len(VelocityComponentsToStore)):
-                    print("BINNING WITH WEIGHT %s.\n" %(VelocityComponentsToStore[k]))
+            if idata.storeVelocityField:
+                for k, comp in enumerate(VelocityComponentsToStore):
+                    print("BINNING WITH WEIGHT %s.\n" % comp)
                     sys.stdout.flush()
-                    # choose the weight
-                    if VelocityComponentsToStore[k] == "Nx":
-                        weight = data_sim_NxNyNz[:,0,:].copy()
-                    elif VelocityComponentsToStore[k] == "Ny":
-                        weight = data_sim_NxNyNz[:,1,:].copy()
-                    elif VelocityComponentsToStore[k] == "Nz":
-                        weight = data_sim_NxNyNz[:,2,:].copy()
-                    elif VelocityComponentsToStore[k] == "Vx":
-                        weight = data_sim_VxVyVz[:,0,:].copy()
-                    elif VelocityComponentsToStore[k] == "Vy":
-                        weight = data_sim_VxVyVz[:,1,:].copy()
-                    elif VelocityComponentsToStore[k] == "Vz":
-                        weight = data_sim_VxVyVz[:,2,:].copy()
-                    elif VelocityComponentsToStore[k] == "Nparallel":
-                        weight = data_sim_Nparallel[:,:].copy()
-                    elif VelocityComponentsToStore[k] == "phiN":
-                        weight = data_sim_phiN[:,:].copy()
-                    elif VelocityComponentsToStore[k] == "Nperp":
-                        weight = data_sim_Nperp[:,:].copy()
+                    tmpnmbrrays = _run_binning(_select_weight(comp, **_weight_data),
+                                               VelocityFieldScattered[:,:,:,:,k,:], 2, 0)
 
-                    if uniform_bins == True:
-                        tmpnmbrrays = binning(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                            weight,
-                                            VelocityFieldScattered[:,:,:,:,k,:],
-                                            min[0], max[0], min[1], max[1], min[2], max[2], min[3], max[3],
-                                            nmbr[0], nmbr[1], nmbr[2], nmbr[3],
-                                            data_sim_time,
-                                            2,         # binning scattered rays
-                                            data_sim_scattered,
-                                            0)     # not the absorption binning scheme
-                    else:
-                        tmpnmbrrays = binning_nonuni(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                            weight,
-                                            VelocityFieldScattered[:,:,:,:,k,:],
-                                            bins[0], bins[1], bins[2], bins[3],
-                                            data_sim_time,
-                                            2,         # binning scattered rays
-                                            data_sim_scattered,
-                                            0)
-
-            
-            if idata.storeAbsorption == True:
+            if idata.storeAbsorption:
                 print("BINNING WITH ABSORPTION WITH WEIGHT 1.\n")
                 sys.stdout.flush()
-                # and do the binning 
-                if uniform_bins == True:
+                tmpnmbrrays = _run_binning(np.empty([0,0]), AbsorptionScattered, 2, 1)
 
-                    tmpnmbrrays = binning(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                        np.empty([0,0]),
-                                        AbsorptionScattered,
-                                        min[0], max[0], min[1], max[1], min[2], max[2], min[3], max[3],
-                                        nmbr[0], nmbr[1], nmbr[2], nmbr[3],
-                                        data_sim_time,
-                                        2,   # binning scattered rays
-                                        data_sim_scattered,
-                                        1)   # absorption scheme
-                else:
-                    tmpnmbrrays = binning_nonuni(data_sim, data_sim_Wfct, data_sim_CorrectionFactor,
-                                        np.empty([0,0]),
-                                        AbsorptionScattered,
-                                        bins[0], bins[1], bins[2], bins[3],
-                                        data_sim_time,
-                                        2,   # binning scattered rays
-                                        data_sim_scattered,
-                                        1)
-
-                             
-                    
-
-            print('%i scattered rays have been binned, %i available in total.\n' %(tmpnmbrrays, nmbrRaysToUse))
+            print('%i scattered rays have been binned, %i available in total.\n' % (tmpnmbrrays, nmbrRaysToUse))
             nmbrRaysScattered += tmpnmbrrays
-            
-            
-                    
+
+
     print("COMPOSING AND NORMALISING THE FINAL QUANTITIES.\n")
     sys.stdout.flush()
     nmbrRays = nmbrRaysScattered + nmbrRaysUnscattered
+
     # IF CHOSEN IN INPUT FILE COMPUTE THE EFFECT OF SCATTERING
     ############################################################################
-    if idata.computeScatteringEffect == True:
-        
-        if idata.storeWfct == True:
-            # allocate memory for this
-            WfctScatteringEffect = np.zeros(np.append(nmbr,2))
-        
-            # compute expectation value
+    if idata.computeScatteringEffect:
+
+        if idata.storeWfct:
+            WfctScatteringEffect = np.zeros(np.append(nmbr, 2))
             WfctScatteringEffect[:,:,:,:,0] = (WfctScattered[:,:,:,:,0] \
-                                                   - nmbrRaysScattered/nmbrRaysUnscattered \
-                                                   *WfctUnscattered[:,:,:,:,0]) / nmbrRays
-            # and uncertainty if needed
+                                               - nmbrRaysScattered/nmbrRaysUnscattered \
+                                               * WfctUnscattered[:,:,:,:,0]) / nmbrRays
             WfctScatteringEffect[:,:,:,:,1] = (WfctScattered[:,:,:,:,1] \
-                                                   + nmbrRaysScattered**2/nmbrRaysUnscattered**2 \
-                                                   * WfctUnscattered[:,:,:,:,1]) / nmbrRays**2
+                                               + nmbrRaysScattered**2/nmbrRaysUnscattered**2 \
+                                               * WfctUnscattered[:,:,:,:,1]) / nmbrRays**2
             WfctScatteringEffect[:,:,:,:,1] = np.sqrt(WfctScatteringEffect[:,:,:,:,1])
 
-        # and do the same for the velocity field
-        if idata.storeVelocityField == True:
-            VelocityFieldScatteringEffect = np.zeros(np.append(nmbr, [len(VelocityComponentsToStore),2]))
-            
-            # compute expectation value
+        if idata.storeVelocityField:
+            VelocityFieldScatteringEffect = np.zeros(np.append(nmbr, [len(VelocityComponentsToStore), 2]))
             VelocityFieldScatteringEffect[:,:,:,:,:,0] = (VelocityFieldScattered[:,:,:,:,:,0] \
-                                                            - nmbrRaysScattered/nmbrRaysUnscattered \
-                                                            *VelocityFieldUnscattered[:,:,:,:,:,0]) / nmbrRays
-            # and uncertainty if needed
+                                                          - nmbrRaysScattered/nmbrRaysUnscattered \
+                                                          * VelocityFieldUnscattered[:,:,:,:,:,0]) / nmbrRays
             VelocityFieldScatteringEffect[:,:,:,:,:,1] = (VelocityFieldScattered[:,:,:,:,:,1] \
-                                                            + nmbrRaysScattered**2/nmbrRaysUnscattered**2 \
-                                                            *VelocityFieldUnscattered[:,:,:,:,:,1]) / nmbrRays**2
+                                                          + nmbrRaysScattered**2/nmbrRaysUnscattered**2 \
+                                                          * VelocityFieldUnscattered[:,:,:,:,:,1]) / nmbrRays**2
             VelocityFieldScatteringEffect[:,:,:,:,:,1] = np.sqrt(VelocityFieldScatteringEffect[:,:,:,:,:,1])
 
-            
-        if idata.storeAbsorption == True:
-            # allocate memory for this
-            AbsorptionScatteringEffect = np.zeros(np.append(nmbr,2))
-        
-            # compute expectation value
+        if idata.storeAbsorption:
+            AbsorptionScatteringEffect = np.zeros(np.append(nmbr, 2))
             AbsorptionScatteringEffect[:,:,:,:,0] = (AbsorptionScattered[:,:,:,:,0] \
-                                                   - nmbrRaysScattered/nmbrRaysUnscattered \
-                                                   *AbsorptionUnscattered[:,:,:,:,0]) / nmbrRays
-          
+                                                     - nmbrRaysScattered/nmbrRaysUnscattered \
+                                                     * AbsorptionUnscattered[:,:,:,:,0]) / nmbrRays
             AbsorptionScatteringEffect[:,:,:,:,1] = (AbsorptionScattered[:,:,:,:,1] \
-                                                         + nmbrRaysScattered**2/nmbrRaysUnscattered**2 \
-                                                         *AbsorptionUnscattered[:,:,:,:,1]) / nmbrRays**2
+                                                     + nmbrRaysScattered**2/nmbrRaysUnscattered**2 \
+                                                     * AbsorptionUnscattered[:,:,:,:,1]) / nmbrRays**2
             AbsorptionScatteringEffect[:,:,:,:,1] = np.sqrt(AbsorptionScatteringEffect[:,:,:,:,1])
-      
+
 
     # IF CHOSEN IN INPUT FILE ESTIMATE THE CONTRIBUTION OF SCATTERED RAYS
     ############################################################################
-    if idata.computeScatteredContribution == True:
-        if idata.storeWfct == True:
-            WfctScatteredContribution = np.zeros(np.append(nmbr,2))
-            WfctScatteredContribution[:,:,:,:,0] = WfctScattered[:,:,:,:,0] / nmbrRays  
-            WfctScatteredContribution[:,:,:,:,1] = np.sqrt(WfctScattered[:,:,:,:,1]) / nmbrRays  
+    if idata.computeScatteredContribution:
+        if idata.storeWfct:
+            WfctScatteredContribution = np.zeros(np.append(nmbr, 2))
+            WfctScatteredContribution[:,:,:,:,0] = WfctScattered[:,:,:,:,0] / nmbrRays
+            WfctScatteredContribution[:,:,:,:,1] = np.sqrt(WfctScattered[:,:,:,:,1]) / nmbrRays
 
-        if idata.storeVelocityField == True:
-            VelocityFieldScatteredContribution = np.zeros(np.append(nmbr, [len(VelocityComponentsToStore),2]))
+        if idata.storeVelocityField:
+            VelocityFieldScatteredContribution = np.zeros(np.append(nmbr, [len(VelocityComponentsToStore), 2]))
             VelocityFieldScatteredContribution[:,:,:,:,:,0] = VelocityFieldScattered[:,:,:,:,:,0] / nmbrRays
             VelocityFieldScatteredContribution[:,:,:,:,:,1] = np.sqrt(VelocityFieldScattered[:,:,:,:,:,1]) / nmbrRays
-            
-        if idata.storeAbsorption == True:
-            AbsorptionScatteredContribution = np.zeros(np.append(nmbr,2))
+
+        if idata.storeAbsorption:
+            AbsorptionScatteredContribution = np.zeros(np.append(nmbr, 2))
             AbsorptionScatteredContribution[:,:,:,:,0] = AbsorptionScattered[:,:,:,:,0] / nmbrRays
             AbsorptionScatteredContribution[:,:,:,:,1] = np.sqrt(AbsorptionScattered[:,:,:,:,1]) / nmbrRays
-
-            
 
 
     # IF CHOSEN IN INPUT FILE COMPUTE THE TOTAL AMPLITUDE
     ############################################################################
     if idata.computeAmplitude:
-        if idata.storeWfct == True:
-            # allocate memory for this
-            Wfct = np.zeros(np.append(nmbr,2))
-            # compute expectation value
+        if idata.storeWfct:
+            Wfct = np.zeros(np.append(nmbr, 2))
             Wfct[:,:,:,:,0] = (WfctScattered[:,:,:,:,0] + WfctUnscattered[:,:,:,:,0]) / nmbrRays
-    
-            # and uncertainty if needed
             Wfct[:,:,:,:,1] = np.sqrt(WfctScattered[:,:,:,:,1] + WfctUnscattered[:,:,:,:,1]) / nmbrRays
-        
-        # and do the same for the velocity field if needed
-        if idata.storeVelocityField == True:
-            VelocityField = np.zeros(np.append(nmbr, [len(VelocityComponentsToStore),2]))
 
-            VelocityField[:,:,:,:,:,0] = (VelocityFieldScattered[:,:,:,:,:,0] + VelocityFieldUnscattered[:,:,:,:,:,0]) \
-                / nmbrRays
-
+        if idata.storeVelocityField:
+            VelocityField = np.zeros(np.append(nmbr, [len(VelocityComponentsToStore), 2]))
+            VelocityField[:,:,:,:,:,0] = (VelocityFieldScattered[:,:,:,:,:,0] + VelocityFieldUnscattered[:,:,:,:,:,0]) / nmbrRays
             VelocityField[:,:,:,:,:,1] = np.sqrt(VelocityFieldScattered[:,:,:,:,:,1] \
-                                                   + VelocityFieldUnscattered[:,:,:,:,:,1]) / nmbrRays
+                                                  + VelocityFieldUnscattered[:,:,:,:,:,1]) / nmbrRays
 
-        if idata.storeAbsorption == True:
-            # allocate memory for this
-            Absorption = np.zeros(np.append(nmbr,2))
-            # compute expectation value
+        if idata.storeAbsorption:
+            Absorption = np.zeros(np.append(nmbr, 2))
             Absorption[:,:,:,:,0] = (AbsorptionScattered[:,:,:,:,0] + AbsorptionUnscattered[:,:,:,:,0]) / nmbrRays
-            Absorption[:,:,:,:,1] = np.sqrt(AbsorptionScattered[:,:,:,:,1] + AbsorptionUnscattered[:,:,:,:,1]) / nmbrRays 
-                
+            Absorption[:,:,:,:,1] = np.sqrt(AbsorptionScattered[:,:,:,:,1] + AbsorptionUnscattered[:,:,:,:,1]) / nmbrRays
 
 
     # IF CHOSEN IN INPUT FILE NORMALISE THE UNSCATTERED AMPLITUDE
     ############################################################################
-    if idata.computeAmplitudeUnscattered == True:
-        if idata.storeWfct == True:
+    if idata.computeAmplitudeUnscattered:
+        if idata.storeWfct:
             WfctUnscattered[:,:,:,:,0] = WfctUnscattered[:,:,:,:,0] / nmbrRaysUnscattered
             WfctUnscattered[:,:,:,:,1] = np.sqrt(WfctUnscattered[:,:,:,:,1]) / nmbrRaysUnscattered
 
-        # and the same for the velocity field
-        if idata.storeVelocityField == True:
+        if idata.storeVelocityField:
             VelocityFieldUnscattered[:,:,:,:,:,0] = VelocityField[:,:,:,:,:,0] / nmbrRaysUnscattered
             VelocityFieldUnscattered[:,:,:,:,:,1] = np.sqrt(VelocityField[:,:,:,:,:,1]) / nmbrRaysUnscattered
-    
-        if idata.storeAbsorption == True:
+
+        if idata.storeAbsorption:
             AbsorptionUnscattered[:,:,:,:,0] = AbsorptionUnscattered[:,:,:,:,0] / nmbrRaysUnscattered
             AbsorptionUnscattered[:,:,:,:,1] = np.sqrt(AbsorptionUnscattered[:,:,:,:,1]) / nmbrRaysUnscattered
 
 
-    
-
-
-    # REDUCE THE MATRIXES TO THE MEANINGFULL DIMENSIONS
+    # REDUCE THE MATRICES TO THE MEANINGFUL DIMENSIONS
     ############################################################################
     firstaxistosum = len(idata.WhatToResolve)
-    for i in range(firstaxistosum,4):
-        if idata.computeAmplitude == True:
-            if idata.storeWfct == True:
-                Wfct = np.sum(Wfct, axis=firstaxistosum)
-            if idata.storeVelocityField == True:
-                VelocityField = np.sum(VelocityField, axis=firstaxistosum)
-            if idata.storeAbsorption == True:
-                Absorption = np.sum(Absorption, axis=firstaxistosum)
-        if idata.computeAmplitudeUnscattered == True:
-            if idata.storeWfct == True:
-                WfctUnscattered = np.sum(WfctUnscattered, axis=firstaxistosum)
-            if idata.storeVelocityField == True:
-                VelocityFieldUnscattered = np.sum(VelocityFieldUnscattered, axis=firstaxistosum)
-            if idata.storeAbsorption == True:
-                AbsorptionUnscattered = np.sum(AbsorptionUnscattered, axis=firstaxistosum)
-        if idata.computeScatteringEffect == True:
-            if idata.storeWfct == True:
-                WfctScatteringEffect = np.sum(WfctScatteringEffect, axis=firstaxistosum)
-            if idata.storeVelocityField == True:
-                VelocityFieldScatteringEffect = np.sum(VelocityFieldScatteringEffect, axis=firstaxistosum)
-            if idata.storeAbsorption == True:
-                AbsorptionScatteringEffect = np.sum(AbsorptionScatteringEffect, axis=firstaxistosum)
-        if idata.computeScatteredContribution == True:
-            if idata.storeWfct == True:
-                WfctScatteredContribution = np.sum(WfctScatteredContribution, axis=firstaxistosum)
-            if idata.storeVelocityField == True:
-                VelocityFieldScatteredContribution = np.sum(VelocityFieldScatteredContribution, axis=firstaxistosum)
-            if idata.storeAbsorption == True:
-                AbsorptionScatteredContribution = np.sum(AbsorptionScatteredContribution, axis=firstaxistosum)
-            
-
+    for i in range(firstaxistosum, 4):
+        if idata.computeAmplitude:
+            if idata.storeWfct:           Wfct            = np.sum(Wfct,            axis=firstaxistosum)
+            if idata.storeVelocityField:  VelocityField   = np.sum(VelocityField,   axis=firstaxistosum)
+            if idata.storeAbsorption:     Absorption      = np.sum(Absorption,      axis=firstaxistosum)
+        if idata.computeAmplitudeUnscattered:
+            if idata.storeWfct:           WfctUnscattered          = np.sum(WfctUnscattered,          axis=firstaxistosum)
+            if idata.storeVelocityField:  VelocityFieldUnscattered = np.sum(VelocityFieldUnscattered, axis=firstaxistosum)
+            if idata.storeAbsorption:     AbsorptionUnscattered    = np.sum(AbsorptionUnscattered,    axis=firstaxistosum)
+        if idata.computeScatteringEffect:
+            if idata.storeWfct:           WfctScatteringEffect          = np.sum(WfctScatteringEffect,          axis=firstaxistosum)
+            if idata.storeVelocityField:  VelocityFieldScatteringEffect = np.sum(VelocityFieldScatteringEffect, axis=firstaxistosum)
+            if idata.storeAbsorption:     AbsorptionScatteringEffect    = np.sum(AbsorptionScatteringEffect,    axis=firstaxistosum)
+        if idata.computeScatteredContribution:
+            if idata.storeWfct:           WfctScatteredContribution          = np.sum(WfctScatteredContribution,          axis=firstaxistosum)
+            if idata.storeVelocityField:  VelocityFieldScatteredContribution = np.sum(VelocityFieldScatteredContribution, axis=firstaxistosum)
+            if idata.storeAbsorption:     AbsorptionScatteredContribution    = np.sum(AbsorptionScatteredContribution,    axis=firstaxistosum)
 
 
     # WRITE THE RESULTS TO FILE outputfilename
     ############################################################################
     outputfilename = idata.outputdirectory + outputfilename + '.hdf5'
-    print('write results to file %s \n' %(outputfilename))
+    print('write results to file %s \n' % outputfilename)
     sys.stdout.flush()
-    fid = h5py.File(outputfilename,'w') 
-    # store the computed datasets
-    if idata.computeAmplitude == True:
-        if idata.storeWfct == True:
-            fid.create_dataset("BinnedTraces", data=Wfct)
-        if idata.storeVelocityField == True:
-            fid.create_dataset("VelocityField", data=VelocityField)
-        if idata.storeAbsorption == True:
-            fid.create_dataset("Absorption", data=Absorption)
-    if idata.computeAmplitudeUnscattered == True:
-        if idata.storeWfct == True:
-            fid.create_dataset("BinnedTracesUnscattered", data=WfctUnscattered)
-        if idata.storeVelocityField == True:
-            fid.create_dataset("VelocityFieldUnscattered", data=VelocityFieldUnscattered)
-        if idata.storeAbsorption == True:
-            fid.create_dataset("AbsorptionUnscattered", data=AbsorptionUnscattered)
-    if idata.computeScatteringEffect == True:
-        if idata.storeWfct == True:
-            fid.create_dataset("BinnedTracesScatteringEffect", data=WfctScatteringEffect)
-        if idata.storeVelocityField == True:
-            fid.create_dataset("VelocityFieldScatteringEffect", data=VelocityFieldScatteringEffect)
-        if idata.storeAbsorption == True:
-            fid.create_dataset("AbsorptionScatteringEffect", data=AbsorptionScatteringEffect)
-    if idata.computeScatteredContribution == True:
-        if idata.storeWfct == True:
-            fid.create_dataset("BinnedTracesScatteredContribution", data=WfctScatteredContribution)
-        if idata.storeVelocityField == True:
-            fid.create_dataset("VelocityFieldScattererContribution", data=VelocityFieldScatteredContribution)
-        if idata.storeAbsorption == True:
-            fid.create_dataset("AbsorptionScatteredContribution", data=AbsorptionScatteredContribution)
 
-    if idata.storeVelocityField == True: 
-        # compose a string where they are separated with ',':
-        s = ''
-        for i in range(0,len(VelocityComponentsToStore)):
-            s += VelocityComponentsToStore[i]
-            s += ','    
-        fid.create_dataset("VelocityFieldStored", data=s)
+    with h5py.File(outputfilename, 'w') as fid:
+        # Store computed datasets
+        if idata.computeAmplitude:
+            if idata.storeWfct:          fid.create_dataset("BinnedTraces",  data=Wfct)
+            if idata.storeVelocityField: fid.create_dataset("VelocityField", data=VelocityField)
+            if idata.storeAbsorption:    fid.create_dataset("Absorption",    data=Absorption)
+        if idata.computeAmplitudeUnscattered:
+            if idata.storeWfct:          fid.create_dataset("BinnedTracesUnscattered",  data=WfctUnscattered)
+            if idata.storeVelocityField: fid.create_dataset("VelocityFieldUnscattered", data=VelocityFieldUnscattered)
+            if idata.storeAbsorption:    fid.create_dataset("AbsorptionUnscattered",    data=AbsorptionUnscattered)
+        if idata.computeScatteringEffect:
+            if idata.storeWfct:          fid.create_dataset("BinnedTracesScatteringEffect",  data=WfctScatteringEffect)
+            if idata.storeVelocityField: fid.create_dataset("VelocityFieldScatteringEffect", data=VelocityFieldScatteringEffect)
+            if idata.storeAbsorption:    fid.create_dataset("AbsorptionScatteringEffect",    data=AbsorptionScatteringEffect)
+        if idata.computeScatteredContribution:
+            if idata.storeWfct:          fid.create_dataset("BinnedTracesScatteredContribution",    data=WfctScatteredContribution)
+            if idata.storeVelocityField: fid.create_dataset("VelocityFieldScattererContribution",   data=VelocityFieldScatteredContribution)
+            if idata.storeAbsorption:    fid.create_dataset("AbsorptionScatteredContribution",      data=AbsorptionScatteredContribution)
 
-    # compose a string where they are separated with ',':
-    s = ''
-    for i in range(0,len(idata.WhatToResolve)):
-        s += idata.WhatToResolve[i]
-        s += ','
-    fid.create_dataset("WhatToResolve", data=s)
+        if idata.storeVelocityField:
+            fid.create_dataset("VelocityFieldStored", data=','.join(VelocityComponentsToStore) + ',')
 
-    # look what boundaries are the different directions
-    if uniform_bins == True:
-        for i in range(0,len(idata.WhatToResolve)):
-            if idata.WhatToResolve[i] == 'X':
-                fid.create_dataset("Xmin", data=idata.min[i])
-                fid.create_dataset("Xmax", data=idata.max[i])
-                fid.create_dataset("nmbrX", data=idata.nmbr[i])
-                
-            elif idata.WhatToResolve[i] == 'Y':
-                fid.create_dataset("Ymin", data=idata.min[i])
-                fid.create_dataset("Ymax", data=idata.max[i])
-                fid.create_dataset("nmbrY", data=idata.nmbr[i])
+        fid.create_dataset("WhatToResolve", data=','.join(idata.WhatToResolve) + ',')
 
-            elif idata.WhatToResolve[i] == 'Z':
-                fid.create_dataset("Zmin", data=idata.min[i])
-                fid.create_dataset("Zmax", data=idata.max[i])
-                fid.create_dataset("nmbrZ", data=idata.nmbr[i])
+        # Store grid metadata — each component name maps directly to its dataset prefix
+        if uniform_bins:
+            for i, var in enumerate(idata.WhatToResolve):
+                fid.create_dataset(f"{var}min",  data=bin_min[i])
+                fid.create_dataset(f"{var}max",  data=bin_max[i])
+                fid.create_dataset(f"nmbr{var}", data=idata.nmbr[i])
+        else:
+            for i, var in enumerate(idata.WhatToResolve):
+                fid.create_dataset(f"{var}bins", data=bins[i])
 
-            elif idata.WhatToResolve[i] == 'Nx':
-                fid.create_dataset("Nxmin", data=idata.min[i])
-                fid.create_dataset("Nxmax", data=idata.max[i])
-                fid.create_dataset("nmbrNx", data=idata.nmbr[i])
-
-            elif idata.WhatToResolve[i] == 'Ny':
-                fid.create_dataset("Nymin", data=idata.min[i])
-                fid.create_dataset("Nymax", data=idata.max[i])
-                fid.create_dataset("nmbrNy", data=idata.nmbr[i])
-
-            elif idata.WhatToResolve[i] == 'Nz':
-                fid.create_dataset("Nzmin", data=idata.min[i])
-                fid.create_dataset("Nzmax", data=idata.max[i])
-                fid.create_dataset("nmbrNz", data=idata.nmbr[i])
-            
-            elif idata.WhatToResolve[i] == 'Nparallel':
-                fid.create_dataset("Nparallelmin", data=idata.min[i])
-                fid.create_dataset("Nparallelmax", data=idata.max[i])
-                fid.create_dataset("nmbrNparallel", data=idata.nmbr[i])
-
-            elif idata.WhatToResolve[i] == 'Nperp':
-                fid.create_dataset("Nperpmin", data=idata.min[i])
-                fid.create_dataset("Nperpmax", data=idata.max[i])
-                fid.create_dataset("nmbrNperp", data=idata.nmbr[i])
-
-            elif idata.WhatToResolve[i] == 'phiN':
-                fid.create_dataset("phiNmin", data=idata.min[i])
-                fid.create_dataset("phiNmax", data=idata.max[i])
-                fid.create_dataset("nmbrphiN", data=idata.nmbr[i])
-
-            elif idata.WhatToResolve[i] == 'Psi':
-                fid.create_dataset("Psimin", data=idata.min[i])
-                fid.create_dataset("Psimax", data=idata.max[i])
-                fid.create_dataset("nmbrPsi", data=idata.nmbr[i])
-                
-            elif idata.WhatToResolve[i] == 'rho':
-                fid.create_dataset("rhomin", data=idata.min[i])
-                fid.create_dataset("rhomax", data=idata.max[i])
-                fid.create_dataset("nmbrrho", data=idata.nmbr[i])
-
-            elif idata.WhatToResolve[i] == 'Theta':
-                fid.create_dataset("Thetamin", data=idata.min[i])
-                fid.create_dataset("Thetamax", data=idata.max[i])
-                fid.create_dataset("nmbrTheta", data=idata.nmbr[i])
-
-            elif idata.WhatToResolve[i] == 'R':
-                fid.create_dataset("Rmin", data=idata.min[i])
-                fid.create_dataset("Rmax", data=idata.max[i])
-                fid.create_dataset("nmbrR", data=idata.nmbr[i])
-    else:
-        for i in range(0,len(idata.WhatToResolve)):
-            if idata.WhatToResolve[i] == 'X':
-                fid.create_dataset("Xbins", data=bins[i])
-                
-            elif idata.WhatToResolve[i] == 'Y':
-                fid.create_dataset("Ybins", data=bins[i])
-
-            elif idata.WhatToResolve[i] == 'Z':
-                fid.create_dataset("Zbins", data=bins[i])
-
-            elif idata.WhatToResolve[i] == 'Nx':
-                fid.create_dataset("Nxbins", data=bins[i])
-
-            elif idata.WhatToResolve[i] == 'Ny':
-                fid.create_dataset("Nybins", data=bins[i])
-
-            elif idata.WhatToResolve[i] == 'Nz':
-                fid.create_dataset("Nzbins", data=bins[i])
-            
-            elif idata.WhatToResolve[i] == 'Nparallel':
-                fid.create_dataset("Nparallelbins", data=bins[i])
-
-            elif idata.WhatToResolve[i] == 'Nperp':
-                fid.create_dataset("Nperpbins", data=bins[i])
-
-            elif idata.WhatToResolve[i] == 'phiN':
-                fid.create_dataset("phiNbins", data=bins[i])
-
-            elif idata.WhatToResolve[i] == 'Psi':
-                fid.create_dataset("Psibins", data=bins[i])
-                
-            elif idata.WhatToResolve[i] == 'rho':
-                fid.create_dataset("rhobins", data=bins[i])
-
-            elif idata.WhatToResolve[i] == 'Theta':
-                fid.create_dataset("Thetabins", data=bins[i])
-
-            elif idata.WhatToResolve[i] == 'R':
-                fid.create_dataset("Rbins", data=bins[i])
-
-    fid.create_dataset("nmbrRays", data=nmbrRays)
-    fid.create_dataset("nmbrRaysUnscattered", data=nmbrRaysUnscattered)
-    fid.create_dataset("nmbrRaysScattered", data=nmbrRaysScattered)
-    fid.create_dataset("uniform_bins", data=uniform_bins)
-    fid.create_dataset("Mode",data=sigma)
-    fid.create_dataset("FreqGHz",data=freq)
-    fid.create_dataset("antennapolangle",data=antennapolangle)
-    fid.create_dataset("antennatorangle",data=antennatorangle)
-    fid.create_dataset("rayStartX",data=rayStartX)
-    fid.create_dataset("rayStartY",data=rayStartY)
-    fid.create_dataset("rayStartZ",data=rayStartZ)
-    fid.create_dataset("beamwidth1",data=beamwidth1)
-    fid.create_dataset("beamwidth2",data=beamwidth2)
-    fid.create_dataset("curvatureradius1",data=curvatureradius1)
-    fid.create_dataset("curvatureradius2",data=curvatureradius2)
-    fid.create_dataset("centraleta1",data=centraleta1)
-    fid.create_dataset("centraleta2",data=centraleta2)
-    fid.close()
+        fid.create_dataset("nmbrRays",            data=nmbrRays)
+        fid.create_dataset("nmbrRaysUnscattered",  data=nmbrRaysUnscattered)
+        fid.create_dataset("nmbrRaysScattered",    data=nmbrRaysScattered)
+        fid.create_dataset("uniform_bins",         data=uniform_bins)
+        fid.create_dataset("Mode",               data=sigma)
+        fid.create_dataset("FreqGHz",            data=freq)
+        fid.create_dataset("antennapolangle",    data=antennapolangle)
+        fid.create_dataset("antennatorangle",    data=antennatorangle)
+        fid.create_dataset("rayStartX",          data=rayStartX)
+        fid.create_dataset("rayStartY",          data=rayStartY)
+        fid.create_dataset("rayStartZ",          data=rayStartZ)
+        fid.create_dataset("beamwidth1",         data=beamwidth1)
+        fid.create_dataset("beamwidth2",         data=beamwidth2)
+        fid.create_dataset("curvatureradius1",   data=curvatureradius1)
+        fid.create_dataset("curvatureradius2",   data=curvatureradius2)
+        fid.create_dataset("centraleta1",        data=centraleta1)
+        fid.create_dataset("centraleta2",        data=centraleta2)
 
 # END OF FILE
