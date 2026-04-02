@@ -1,7 +1,0 @@
-inputdirectory                  = 'output/'
-inputfilename                   = ['Standard']
-outputdirectory                 =  'output/'
-min                             = [85., -2.]
-max                             = [120., -1.]
-nmbr                            = [100, 100]
-InputPower                      = 1. 
