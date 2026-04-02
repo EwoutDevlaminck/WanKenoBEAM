@@ -4,20 +4,41 @@ Run $ python WKBeam.py for help.
 
 Examples:
 
-  $ mpiexec -np <n> python WKBeam trace <ray_tracing_configuration_file>
-  $ python WKBeam.py bin <binning_configuration_file>
-  $ python WKBeam.py plotbin <binned_hdf5_file>
-  $ python WKBeam.py plot2d <binning configuration_file>
-  $ python WKBeam.py plotabs <binning_configuration_file> 
-  $ python WKBeam.py ploteq <ray_tracing_configuration_file> 
-  $ python WKBeam.py plotfluct <ray_tracing_configuration_file> 
-  $ python WKBeam.py flux <binning configuration_file>
+  $ mpiexec -np <n> python WKBeam.py trace  <ray_tracing_configuration_file>
+  $ mpiexec -np <n> python WKBeam.py bin    <binning_configuration_file>
+  $ python WKBeam.py plotbin   <binned_hdf5_file> <ray_tracing_configuration_file>
+  $ python WKBeam.py beamFluct <binned_hdf5_file> <ray_tracing_configuration_file>
+  $ python WKBeam.py plot2d    <binning_configuration_file>
+  $ python WKBeam.py plotabs   <binning_configuration_file>
+  $ python WKBeam.py ploteq    <ray_tracing_configuration_file>
+  $ python WKBeam.py plotfluct <ray_tracing_configuration_file>
+  $ python WKBeam.py flux      <binning_configuration_file>
 
-Note that the first argument is a control flag and the second is ether
-and input file or a txt configuration file, cf. examples.
+Note that the first argument is a control flag and the second (and optional
+third) argument is an input file or configuration file, cf. examples.
 
-The ray tracing procedure must be called through mpiexec. Interactive use
-is recommended for testing purposes only with a very small number of rays.
+The ray tracing and binning procedures can be called through mpiexec for
+parallel execution.  Interactive use is recommended for testing purposes
+only with a very small number of rays.
+
+Mode descriptions
+-----------------
+trace     : Monte-Carlo ray tracing.  Requires mpiexec.
+bin       : Bin ray-tracing output onto a spatial/spectral grid.  Supports
+            mpiexec for parallel binning over files.
+plotbin   : Plot the 2-D binned beam (Wfct) overlaid on equilibrium flux
+            surfaces.  Requires the XZ-binned HDF5 file and the RayTracing
+            config (used to load the equilibrium for flux-surface contours).
+beamFluct : Same 2-D beam plot but overlaid with the fluctuation amplitude
+            profile instead of the plain equilibrium.  Same two arguments as
+            plotbin.
+plot2d    : Plot the 2-D angular spectrum from an Angular binning config.
+plotabs   : Plot the 1-D absorbed power profile from an Absorption config.
+ploteq    : Plot the magnetic equilibrium from a RayTracing config.
+plotfluct : Plot the fluctuation model from a RayTracing config.
+flux      : Compute the energy flux through a surface from a binning config.
+beam3d    : 3-D beam visualisation using Mayavi.
+QLdiff    : Compute the quasi-linear diffusion tensor.
 """
 
 # Load standard modules
@@ -86,17 +107,19 @@ msg = """
  where n is the number of processors. 
     
  LIST OF VALID MODE FLAGS:
-  1. trace     - requires <ray_tracing_configuration_file> and mpiexec
-  2. bin       - requires <binning_configuration_file>
-  3. plotbin   - requires <binned_hdf5_file>
-  4. plot2d    - requires <binning_configuration_file>
-  5. plotabs   - requires <list_of_binning_configuration_files> 
-  6. ploteq    - requires <ray_tracing_configuration_file>  
-  7. plotfluct - requires <ray_tracing_configuration_file>  
-  8. flux      - requires <binning_configuration_file>
-  9. beam3d    - requires <binning_configuration_file>
-  10.beamFluct - requires <binned_hdf5_file> and <ray_tracing_configuration_file>
-  11.QLdiff    - requires <QL_diffusion_configuration_file>
+  1.  trace     - <ray_tracing_configuration_file>  (use mpiexec)
+  2.  bin       - <binning_configuration_file>       (supports mpiexec)
+  3.  plotbin   - <XZ_binned.hdf5> <ray_tracing_configuration_file>
+                  Plot 2-D beam on equilibrium flux surfaces.
+  4.  beamFluct - <XZ_binned.hdf5> <ray_tracing_configuration_file>
+                  Plot 2-D beam overlaid with fluctuation amplitude profile.
+  5.  plot2d    - <binning_configuration_file>
+  6.  plotabs   - <list_of_binning_configuration_files>
+  7.  ploteq    - <ray_tracing_configuration_file>
+  8.  plotfluct - <ray_tracing_configuration_file>
+  9.  flux      - <binning_configuration_file>
+  10. beam3d    - <binning_configuration_file>
+  11. QLdiff    - <QL_diffusion_configuration_file>
 """
 
 # Check the console input

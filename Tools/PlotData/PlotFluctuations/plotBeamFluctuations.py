@@ -1,20 +1,25 @@
-"""This module collects plotting routines for the disgnostics of the fluctuation.
-The calculations are done with the exact same functions as the main code and
-with the same ray-tracing configuration file, so that the resulting plot gives 
-a reliable visualization of the actual fluctuation that have been seen by the 
-ray tracing procedures.
+"""Plotting routines for diagnosing how scattering fluctuations affect the beam.
+
+The equilibrium and scattering models are re-instantiated from the RayTracing
+configuration file, so the plots faithfully represent what the ray tracer
+experienced.
+
+Entry point (called by WKBeam.py):
+
+    plot_beam_fluct([xz_binned.hdf5, ..., RayTracing.txt])
+
+All but the last element of the input list are XZ-binned HDF5 files; the last
+element is the RayTracing configuration file.
 """
 
-# Load standard modules
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.colors as clrs
 import h5py
-# Load local modules
+
 from CommonModules.input_data import InputData
 from CommonModules.PlasmaEquilibrium import IntSample, StixParamSample
-from CommonModules.PlasmaEquilibrium import ModelEquilibrium
 from CommonModules.PlasmaEquilibrium import TokamakEquilibrium, TokamakEquilibrium2
 from CommonModules.PlasmaEquilibrium import AxisymmetricEquilibrium
 from RayTracing.modules.atanrightbranch import atanRightBranch
@@ -25,492 +30,410 @@ from Tools.PlotData.PlotVessel.plotVessel import plotVessel
 
 import CommonModules.physics_constants as PhysConst
 
-# Sample the envelope of the fluctuations as used by the code
+# Normalised poloidal flux ψ beyond which fluctuations are not rendered.
+# ψ = ρ_pol², so ψ < 1.6 corresponds to ρ < √1.6 ≈ 1.26  (26 % outside separatrix).
+_PSI_FLUCT_CUTOFF = 1.6
+
+# Colour sequence for successive beam overlays (teal palette)
+_BEAM_COLOURS = ['#007480', '#413C3A', '#00A79F']
+
+
+# ---------------------------------------------------------------------------
+# Fluctuation sampler
+# ---------------------------------------------------------------------------
+
 def sample_fluct_envelop(R1d, Z1d, axis, envelope, Lpp, radial_coord, Eq):
-    
-    """Sample the envelope of the scattering cross-section.
-    The result is normalized to its maximum.
+    """Sample the fluctuation envelope and correlation length on a 2-D (R, Z) grid.
+
+    Parameters
+    ----------
+    R1d, Z1d     : 1-D arrays    Grid coordinates [cm].
+    axis         : (Raxis, Zaxis) Magnetic axis position [cm].
+    envelope     : callable       envelope(Ne, rho, theta) → (δne/ne)²
+    Lpp          : callable       Lpp(rho, theta, Ne, Te, Bnorm) → L⊥ [cm]
+    radial_coord : callable       radial_coord(R, Z) → normalised radius ρ
+    Eq           : equilibrium    Provides Ne, Te, B-field interpolants.
+
+    Returns
+    -------
+    fluct_sample  : 2-D array (nR, nZ)   Fluctuation amplitude squared.
+    length_sample : 2-D array (nR, nZ)   Perpendicular correlation length [cm].
     """
-
     Raxis, Zaxis = axis
-    nptR = np.size(R1d)
-    nptZ = np.size(Z1d)
-    fluct_sample = np.empty([nptR, nptZ])
+    nptR, nptZ   = np.size(R1d), np.size(Z1d)
+    fluct_sample  = np.empty([nptR, nptZ])
     length_sample = np.empty([nptR, nptZ])
-    for iR in range(0, nptR):
-        Rloc = R1d[iR]
-        deltaR = Rloc - Raxis
-        for jZ in range(0, nptZ):
-            Zloc = Z1d[jZ]
-            deltaZ = Zloc - Zaxis
-            Ne = Eq.NeInt.eval(Rloc, Zloc)
-            Te = Eq.TeInt.eval(Rloc, Zloc)
-            Bt = Eq.BtInt.eval(Rloc, Zloc)
-            BR = Eq.BRInt.eval(Rloc, Zloc)
-            Bz = Eq.BzInt.eval(Rloc, Zloc)
-            Bnorm = np.sqrt(Bt**2+BR**2+Bz**2)
-            rho = radial_coord(Rloc, Zloc)
-            theta = atanRightBranch(deltaZ, deltaR)
-            fluct_sample[iR, jZ] = envelope(Ne, rho, theta)
-            length_sample[iR, jZ] = Lpp(rho, theta, Ne, Te, Bnorm)
 
-    # OBSOLETE BEHAVIOR (Normalization to max)
-    # max_amplitude = np.max(sample.flatten())
-    # sample = sample / max_amplitude
+    for iR in range(nptR):
+        Rloc   = R1d[iR]
+        deltaR = Rloc - Raxis
+        for jZ in range(nptZ):
+            Zloc   = Z1d[jZ]
+            deltaZ = Zloc - Zaxis
+            Ne    = Eq.NeInt.eval(Rloc, Zloc)
+            Te    = Eq.TeInt.eval(Rloc, Zloc)
+            Bnorm = np.sqrt(Eq.BtInt.eval(Rloc, Zloc)**2 +
+                            Eq.BRInt.eval(Rloc, Zloc)**2 +
+                            Eq.BzInt.eval(Rloc, Zloc)**2)
+            rho   = radial_coord(Rloc, Zloc)
+            theta = atanRightBranch(deltaZ, deltaR)
+            fluct_sample[iR, jZ]  = envelope(Ne, rho, theta)
+            length_sample[iR, jZ] = Lpp(rho, theta, Ne, Te, Bnorm)
 
     return fluct_sample, length_sample
 
 
+# ---------------------------------------------------------------------------
+# HDF5 loader
+# ---------------------------------------------------------------------------
+
+def _load_beam_data(filename):
+    """Load one XZ-binned HDF5 file and convert to physical units.
+
+    All returned spatial coordinates are in cm.
+    Wfct is converted to energy density [J/m³];
+    Absorption to power density [MW/m³] averaged over the toroidal angle.
+
+    Parameters
+    ----------
+    filename : str   Path to the XZ-binned HDF5 file.
+
+    Returns
+    -------
+    dict with keys:
+        FreqGHz      float         Frequency [GHz].
+        mode         int           Wave mode index.
+        R_cm         1-D array     Bin-centre R coordinates [cm].
+        Z_cm         1-D array     Bin-centre Z coordinates [cm].
+        Wfct         2-D array     Mean energy density [J/m³], shape (nR, nZ).
+        Absorption   2-D array     Mean absorbed power density [MW/m³], or None.
+        P_abs        1-D array     Total absorbed power [MW], shape (2,) = [mean, rms],
+                                   or None if absorption was not recorded.
+        Velocity     4-D array     Velocity field (nR, nZ, ncomp, 2), or None.
+        Abs_recorded bool
+        Vel_recorded bool
+        beam_extent  tuple         (Rmin, Rmax, Zmin, Zmax) [cm].
+    """
+    c = PhysConst.SpeedOfLight  # cm/s
+
+    with h5py.File(filename, 'r') as fid:
+        FreqGHz  = fid['FreqGHz'][()]
+        mode     = fid['Mode'][()]
+        Wfct_raw = fid['BinnedTraces'][()]
+
+        Abs_recorded = 'Absorption' in fid
+        Abs_raw      = fid['Absorption'][()] if Abs_recorded else None
+
+        Vel_recorded = 'VelocityField' in fid
+        Vel_raw      = fid['VelocityField'][()] if Vel_recorded else None
+
+        uniform_bins = bool(fid['uniform_bins'][()]) if 'uniform_bins' in fid else True
+
+        if uniform_bins:
+            # Support both 'X' and 'R' naming conventions
+            if 'Xmin' in fid:
+                Rmin_b = fid['Xmin'][()];  Rmax_b = fid['Xmax'][()];  nR = int(fid['nmbrX'][()])
+            else:
+                Rmin_b = fid['Rmin'][()];  Rmax_b = fid['Rmax'][()];  nR = int(fid['nmbrR'][()])
+            Zmin_b = fid['Zmin'][()];  Zmax_b = fid['Zmax'][()];  nZ = int(fid['nmbrZ'][()])
+            resolveY    = 'Ymin' in fid
+            resolveNpar = 'Nparallelmin' in fid
+        else:
+            Rbins = fid['Xbins'][()] if 'Xbins' in fid else fid['Rbins'][()]
+            Zbins = fid['Zbins'][()]
+            resolveY    = 'Ybins' in fid
+            resolveNpar = 'Nparallelbins' in fid
+
+    # Sum out unused dimensions (toroidal Y and Nparallel) if they were resolved
+    if resolveY:
+        Wfct_raw = np.sum(Wfct_raw, axis=1)
+        if Abs_recorded: Abs_raw = np.sum(Abs_raw, axis=1)
+        if Vel_recorded: Vel_raw = np.sum(Vel_raw, axis=1)
+    if resolveNpar:
+        Wfct_raw = np.sum(Wfct_raw, axis=2)
+        if Abs_recorded: Abs_raw = np.sum(Abs_raw, axis=2)
+        if Vel_recorded: Vel_raw = np.sum(Vel_raw, axis=2)
+
+    # Build coordinate arrays [cm] and toroidal volume element [m³].
+    # Coordinates are divided by 100 (cm → m) only for the unit-conversion step;
+    # all arrays returned by this function stay in cm.
+    if uniform_bins:
+        R_cm = np.linspace(Rmin_b, Rmax_b, nR)
+        Z_cm = np.linspace(Zmin_b, Zmax_b, nZ)
+        dR_m = (Rmax_b - Rmin_b) / nR * 1e-2   # uniform bin width [m]
+        dZ_m = (Zmax_b - Zmin_b) / nZ * 1e-2
+        _, RR_m = np.meshgrid(Z_cm * 1e-2, R_cm * 1e-2)   # (nR, nZ) [m]
+        vol_elem = dR_m * dZ_m * 2 * np.pi * RR_m          # (nR, nZ) [m³]
+        beam_extent = (Rmin_b, Rmax_b, Zmin_b, Zmax_b)
+    else:
+        R_cm = (Rbins[:-1] + Rbins[1:]) / 2
+        Z_cm = (Zbins[:-1] + Zbins[1:]) / 2
+        dR_m = np.diff(Rbins) * 1e-2   # per-bin widths [m]
+        dZ_m = np.diff(Zbins) * 1e-2
+        _, RR_m = np.meshgrid(Z_cm * 1e-2, R_cm * 1e-2)
+        vol_elem = np.outer(dR_m, dZ_m) * 2 * np.pi * RR_m  # (nR, nZ) [m³]
+        beam_extent = (Rbins[0], Rbins[-1], Zbins[0], Zbins[-1])
+
+    # Convert Wfct to energy density [J/m³].
+    # WKBeam stores action density proportional to [MW]; the factor
+    # 1e6 · 4π / (c [m/s]) converts to Joules in the full toroidal volume,
+    # and dividing by vol_elem gives J/m³.
+    unit_factor = 1e6 * 4 * np.pi / (c * 1e-2)   # c: cm/s → m/s
+    print(f'  Total field energy = {np.sum(Wfct_raw) * unit_factor:.3e} J  '
+          f'({filename})')
+    Wfct = Wfct_raw * unit_factor / vol_elem[..., np.newaxis]
+
+    if Abs_recorded:
+        # Compute total absorbed power [MW] before normalisation
+        P_abs = np.sum(Abs_raw, axis=(0, 1))   # shape (2,): [mean, rms]
+        # Normalise to [MW/m³], then average over the toroidal angle (÷ 2πR)
+        Absorption = (Abs_raw
+                      / vol_elem[..., np.newaxis]
+                      / (2 * np.pi * RR_m[..., np.newaxis]))
+    else:
+        Absorption = None
+        P_abs      = None
+
+    if Vel_recorded:
+        # Velocity shape: (nR, nZ, ncomp, 2); vol_elem shape: (nR, nZ)
+        Velocity = Vel_raw / vol_elem[:, :, np.newaxis, np.newaxis]
+    else:
+        Velocity = None
+
+    return dict(
+        FreqGHz      = FreqGHz,
+        mode         = mode,
+        R_cm         = R_cm,
+        Z_cm         = Z_cm,
+        Wfct         = Wfct[:, :, 0],              # mean channel (index 0)
+        Absorption   = Absorption[:, :, 0] if Abs_recorded else None,
+        P_abs        = P_abs,
+        Velocity     = Velocity,
+        Abs_recorded = Abs_recorded,
+        Vel_recorded = Vel_recorded,
+        beam_extent  = beam_extent,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main plotting function
+# ---------------------------------------------------------------------------
+
 def plot_beam_fluct(inputdata):
-    
-    """Plot the fluctuation envelope using the parameters in the 
-    ray-tracing configuration file configfile passed as the only
-    argument. """
-	
-    # Load the input data from the ray tracing file and configuration file
-    #both are needed for the double plotting intended here.
-    
-    inputfilenames, configfile = inputdata[0:-1], inputdata[-1]
-    # read the data from data file given in inputfilename
-    FreqGHz = []
-    mode = []
-    Wfct = []
-    Absorption = []
-    Velocity = []
+    """Plot the 2-D beam propagation overlaid with the fluctuation amplitude profile.
 
-    for i,file in enumerate(inputfilenames):
-        print('Reading data file...\n')
-        fid = h5py.File(file,'r')
-        FreqGHz.append(fid.get('FreqGHz')[()])
+    Parameters
+    ----------
+    inputdata : list
+        All elements except the last are paths to XZ-binned HDF5 files.
+        The last element is the path to the RayTracing configuration file,
+        which is used to reconstruct the equilibrium and fluctuation model.
+    """
+    inputfilenames = inputdata[:-1]
+    configfile     = inputdata[-1]
 
-        c = PhysConst.SpeedOfLight               # speed of light in cm / s
-        omega = PhysConst.AngularFrequency(FreqGHz[-1]) # 2.*math.pi*freq*1e9
-        k0 = PhysConst.WaveNumber(omega)         # omega / c  wave vector in free space
-        mode.append(fid.get('Mode')[()])
-        Wfct.append(fid.get('BinnedTraces')[()]) # This is the integrated v from your notes, so Normfac * (k0/2pi)³ * w_unit
-        try:
-            Absorption.append(fid.get('Absorption')[()])
-            Abs_recorded = True
-        except:
-            Abs_recorded = False
-        try:
-            Velocity.append(fid.get('VelocityField')[()])
-            # Stored as a tuple of size (N_1stdim, N_2nddim, Component, 0)
-            Vel_recorded = True
-        except:
-            Vel_recorded = False
-        try:
-            uniform_bins = fid.get('uniform_bins')[()]
-        except: 
-            uniform_bins = True
-        
-        if uniform_bins:
-            try:
-                Xmin_beam = fid.get('Xmin')[()]
-                Xmax_beam = fid.get('Xmax')[()]
-                nmbrX_beam = fid.get('nmbrX')[()]
-                resolve = "X"
-            except:
-                Xmin_beam = fid.get('Rmin')[()]
-                Xmax_beam = fid.get('Rmax')[()]
-                nmbrX_beam = fid.get('nmbrR')[()]
-                resolve = "R"
+    # -----------------------------------------------------------------------
+    # Load beam data
+    # -----------------------------------------------------------------------
+    print('Reading beam data...')
+    beams = [_load_beam_data(f) for f in inputfilenames]
 
-            try:
-                resolveY = True
-                Ymin_beam = fid.get('Ymin')[()]
-                Ymax_beam = fid.get('Ymax')[()]
-                nmbrY_beam = fid.get('nmbrY')[()]
-            except:
-                resolveY = False
+    any_abs = any(b['Abs_recorded'] for b in beams)
+    if any_abs:
+        P_abs_total      = sum(b['P_abs'] for b in beams if b['P_abs'] is not None)
+        Absorption_total = sum(b['Absorption'] for b in beams if b['Absorption'] is not None)
 
-
-            try:
-                resolveNpar = True
-                Nparallelmin_beam = fid.get('Nparallelmin')[()]
-                Nparallelmax_beam = fid.get('Nparallelmax')[()]
-                nmbrNparallel_beam = fid.get('nmbrNparallel')[()]
-            except:
-                resolveNpar = False
-
-
-            Zmin_beam = fid.get('Zmin')[()]
-            Zmax_beam = fid.get('Zmax')[()]
-            nmbrZ_beam= fid.get('nmbrZ')[()]
-
-        else:
-            try:
-                Xbins = fid.get('Xbins')[()]
-                resolve = "X"
-            except:
-                Xbins = fid.get('Rbins')[()]
-                resolve = "R"
-
-            try:
-                resolveY = True
-                Ybins = fid.get('Ybins')[()]
-            except:
-                resolveY = False
-
-            try:
-                resolveNpar = True
-                Nparallelbins = fid.get('Nparallelbins')[()]
-            except:
-                resolveNpar = False
-
-            Zbins = fid.get('Zbins')[()]
-
-        fid.close()
-
-        if resolveY == True:
-            Wfct[i] = np.sum(Wfct[i],axis=1)
-        if resolveNpar == True:
-            Wfct[i] = np.sum(Wfct[i],axis=2)
-
-        # calculate the corresponding cube-edgelength
-        if uniform_bins:
-            DeltaX = (Xmax_beam-Xmin_beam)/nmbrX_beam
-            DeltaZ = (Zmax_beam-Zmin_beam)/nmbrZ_beam
-
-            #Wfct[i] = Wfct[i]/DeltaX/DeltaZ
-            R_beam = np.linspace(Xmin_beam, Xmax_beam, nmbrX_beam) / 100 # m
-            Z_beam = np.linspace(Zmin_beam, Zmax_beam, nmbrZ_beam) / 100 # m
-            ZZ_beam, RR_beam = np.meshgrid(Z_beam, R_beam)
-
-            # Calculate the energy density in a gridcell [J/m³]
-            # E_dens = 4pi/c * BinnedTraces /dV
-
-            Wfct[i] *= 1e6  * 4 * np.pi / (c/100) # Convert to J in the full volume
-
-            print(f'Total field energy = {np.sum(Wfct[i])}J')
-
-            Wfct[i] /= DeltaX*DeltaZ * 1e-4 * 2 * np.pi * np.expand_dims(RR_beam, axis=-1) # Devided by toroidal volume element in m³
-
-            if Abs_recorded:
-                P_abs = np.sum(Absorption[i], axis=(0,1))
-                # And convert to MW/m³ by dividing by the toroidal length
-                Absorption[i] /= DeltaX*DeltaZ * 1e-4 * 2 * np.pi * np.expand_dims(RR_beam, axis=-1) # MW/m³
-                Absorption[i] /= 2 * np.pi * np.expand_dims(RR_beam, axis=-1) # Averaged over the toroidal angle
-            
-            if Vel_recorded:
-                # We have to convert to MW/m², I'm not entirely sure how yet...
-                for j in range(Velocity[i].shape[2]):
-    
-                    Velocity[i][:,:,j, :] /= DeltaX*DeltaZ * 1e-4 * 2 * np.pi * np.expand_dims(RR_beam, axis=-1) # MW/m³
-
-        else:
-            DeltaX = np.diff(Xbins)
-            DeltaZ = np.diff(Zbins)
-            DeltaArea = np.outer(DeltaX, DeltaZ)
-            R_beam = (Xbins[:-1] + Xbins[1:]) / 2 / 100 # m
-            Z_beam = (Zbins[:-1] + Zbins[1:]) / 2 / 100 # m
-            ZZ_beam, RR_beam = np.meshgrid(Z_beam, R_beam)
-
-            # Calculate the energy density in a gridcell [J/m³]
-            # E_dens = 4pi/c * BinnedTraces /dV
-
-            Wfct[i] *= 1e6  * 4 * np.pi / (c/100) # Convert to J in the full volume
-
-            print(f'Total field energy = {np.sum(Wfct[i])}J')
-
-            Wfct[i] /= np.expand_dims(DeltaArea, axis=-1) * 1e-4 * 2 * np.pi * np.expand_dims(RR_beam, axis=-1) # Devided by toroidal volume element in m³
-
-            if Abs_recorded:
-                P_abs = np.sum(Absorption[i], axis=(0,1))
-                # And convert to MW/m³ by dividing by the toroidal length
-                Absorption[i] /= np.expand_dims(DeltaArea, axis=-1) * 1e-4 * 2 * np.pi * np.expand_dims(RR_beam, axis=-1)
-                Absorption[i] /= 2 * np.pi * np.expand_dims(RR_beam, axis=-1) # Averaged over the toroidal angle
-
-            if Vel_recorded:
-                # We have to convert to MW/m², I'm not entirely sure how yet...
-                for j in range(Velocity[i].shape[2]):
-    
-                    Velocity[i][:,:,j, :] /= np.expand_dims(DeltaArea, axis=-1) * 1e-4 * 2 * np.pi * np.expand_dims(RR_beam, axis=-1)
-    
-    ##############################################
-    
-    #Now move on to equilibrium and fluctuation level calculations
-    
+    # -----------------------------------------------------------------------
+    # Load equilibrium and fluctuation model from the RayTracing config
+    # -----------------------------------------------------------------------
     idata = InputData(configfile)
 
-    # Load the equilibrium, depending on the type of device
-    # and extract the appropriate function to visualize the equilibrium:
-    # either the psi coordinate for tokamaks or the density
-    # for generic axisymmetric devices (TORPEX).
     if idata.equilibrium == 'Tokamak':
-
-        Eq = TokamakEquilibrium(idata)
-
-        # Figure size
-        figsize = (6,8)
-
-        # Define the grid on the poloidal plane of the device
-        Rmin = Eq.Rgrid[0, 0]
-        Rmax = Eq.Rgrid[-1, 0]
-        Zmin = Eq.zgrid[0, 0]
-        Zmax = Eq.zgrid[0, -1]
-        nptR = int((Rmax - Rmin) / (idata.rmin / 100.)) # dR = a/100 
-        nptZ = int((Zmax - Zmin) / (idata.rmin / 100.)) # dZ = a/100
-        #
-        print('Using resolution nptR = {}, nptZ = {}'.format(nptR, nptZ))
-        #
-        R1d = np.linspace(Rmin, Rmax, nptR)
-        Z1d = np.linspace(Zmin, Zmax, nptZ)
-
-        # Position of the magnetic axis
-        axis = Eq.magn_axis_coord_Rz
-
-        StixX, StixY, field_and_density = StixParamSample(R1d, Z1d, Eq, idata.freq)
-
-        # Define the quantity for the visualization of the equilibrium
-        psi = IntSample(R1d, Z1d, Eq.PsiInt.eval)
-        equilibrium = psi 
-
+        Eq      = TokamakEquilibrium(idata)
+        figsize = (7, 8)
     elif idata.equilibrium == 'Tokamak2D':
-
-        Eq = TokamakEquilibrium2(idata)
-
-        # Figure size
-        figsize = (6,8)
-
-        # Define the grid on the poloidal plane of the device
-        Rmin = Eq.Rgrid[0, 0]
-        Rmax = Eq.Rgrid[-1, 0]
-        Zmin = Eq.zgrid[0, 0]
-        Zmax = Eq.zgrid[0, -1]
-        nptR = int((Rmax - Rmin) / (idata.rmin / 100.)) # dR = a/100 
-        nptZ = int((Zmax - Zmin) / (idata.rmin / 100.)) # dZ = a/100
-        #
-        print('Using resolution nptR = {}, nptZ = {}'.format(nptR, nptZ))
-        #
-        R1d = np.linspace(Rmin, Rmax, nptR)
-        Z1d = np.linspace(Zmin, Zmax, nptZ)
-
-        # Position of the magnetic axis
-        axis = Eq.magn_axis_coord_Rz
-
-        StixX, StixY, field_and_density = StixParamSample(R1d, Z1d, Eq, idata.freq)
-
-        # Define the quantity for the visualization of the equilibrium
-        psi = IntSample(R1d, Z1d, Eq.PsiInt.eval)
-        equilibrium = psi 
-
+        Eq      = TokamakEquilibrium2(idata)
+        figsize = (7, 8)
     elif idata.equilibrium == 'Axisymmetric':
-
-        Eq = AxisymmetricEquilibrium(idata)
-
-        # Figure size
-        figsize = (8,8)
-
-        # Define the grid on the poloidal plane of the device
-        Rmin = idata.rmaj - idata.rmin
-        Rmax = idata.rmaj + idata.rmin
-        Zmin = -idata.rmin
-        Zmax = +idata.rmin
-        nptR = int((Rmax - Rmin) / (idata.rmin / 100.)) # dR = a/100 
-        nptZ = int((Zmax - Zmin) / (idata.rmin / 100.)) # dZ = a/100
-        #
-        print('Using resolution nptR = {}, nptZ = {}'.format(nptR, nptZ))
-        #
-        R1d = np.linspace(Rmin, Rmax, nptR)
-        Z1d = np.linspace(Zmin, Zmax, nptZ)
-
-        # Position of the effective center of the machine
-        axis = [idata.rmaj, 0.]
-
-        # Define the quantity for the visualization of the equilibrium
-        equilibrium = IntSample(R1d, Z1d, Eq.NeInt.eval) # this is set to Ne
-
+        Eq      = AxisymmetricEquilibrium(idata)
+        figsize = (7, 8)
     else:
-        msg = "Keyword 'equilibrium' must be either 'Tomakak' or 'Axisymmetric'"
-        raise ValueError(msg)
+        raise ValueError("'equilibrium' must be 'Tokamak', 'Tokamak2D', or 'Axisymmetric'")
 
-    # Construct the object for the fluctuations depending on the model
-    rank = 0 # dummy
-    if idata.scatteringGaussian == True:
-        Fluct = GaussianModel_base(idata,rank)
-        envelope = lambda Ne, rho, theta: \
-                   Fluct.scatteringDeltaneOverne(Ne,rho,theta)**2
-        
-    elif idata.scatteringGaussian == False:
-        Fluct = ShaferModel_base(idata,rank)
+    # -----------------------------------------------------------------------
+    # Set up the equilibrium grid
+    # -----------------------------------------------------------------------
+    has_flux_surfaces = idata.equilibrium in ('Tokamak', 'Tokamak2D')
+
+    if has_flux_surfaces:
+        Rmin, Rmax = Eq.Rgrid[0, 0],  Eq.Rgrid[-1, 0]
+        Zmin, Zmax = Eq.zgrid[0, 0],  Eq.zgrid[0, -1]
+        axis       = Eq.magn_axis_coord_Rz
+    else:
+        Rmin, Rmax = idata.rmaj - idata.rmin, idata.rmaj + idata.rmin
+        Zmin, Zmax = -idata.rmin, idata.rmin
+        axis       = [idata.rmaj, 0.]
+
+    # Grid spacing ≈ rmin / 100  (keeps resolution machine-independent)
+    nptR = int((Rmax - Rmin) / (idata.rmin / 100.))
+    nptZ = int((Zmax - Zmin) / (idata.rmin / 100.))
+    print(f'Equilibrium grid: nptR={nptR}, nptZ={nptZ}')
+    R1d = np.linspace(Rmin, Rmax, nptR)
+    Z1d = np.linspace(Zmin, Zmax, nptZ)
+
+    # Sample equilibrium quantities on the 2-D grid
+    Ne = IntSample(R1d, Z1d, Eq.NeInt.eval)
+
+    if has_flux_surfaces:
+        _, StixY, _ = StixParamSample(R1d, Z1d, Eq, idata.freq)
+        psi         = IntSample(R1d, Z1d, Eq.PsiInt.eval)  # normalised poloidal flux
+        equilibrium = psi
+    else:
+        equilibrium = Ne   # fall back to density for non-tokamak devices
+
+    # -----------------------------------------------------------------------
+    # Fluctuation model (identical to what the ray tracer used)
+    # -----------------------------------------------------------------------
+    rank = 0   # dummy MPI rank, not used in the base model classes
+    if idata.scatteringGaussian:
+        Fluct    = GaussianModel_base(idata, rank)
+        envelope = lambda Ne, rho, theta: Fluct.scatteringDeltaneOverne(Ne, rho, theta)**2
+    else:
+        Fluct    = ShaferModel_base(idata, rank)
         envelope = lambda Ne, rho, theta: Fluct.ShapeModel(rho, theta)
-        
-    # In both cases the function which evaluates the perpendicular correlation
-    # length is set as an attribute of the fluctuation model.
-    # This coincides with the function given as input if given.
-    Lpp = Fluct.scatteringLengthPerp
-        
-    # Define the relevant radial coordinate in presence of flux surfaces
+
+    Lpp          = Fluct.scatteringLengthPerp
     radial_coord = lambda R, Z: np.sqrt(Eq.PsiInt.eval(R, Z))
 
-    # Sample the envelope of the given poloidal grid
-    fluct, _ = sample_fluct_envelop(R1d, Z1d, axis,
-                                         envelope, Lpp, radial_coord, Eq)
-    	
-    # Plotting directives
-    fig1 = plt.figure(1, figsize=figsize)
-    ax1 = fig1.add_subplot(111, aspect='equal')
+    print('Sampling fluctuation envelope on equilibrium grid...')
+    fluct, _ = sample_fluct_envelop(R1d, Z1d, axis, envelope, Lpp, radial_coord, Eq)
 
-    #Plot the vessel
+    # -----------------------------------------------------------------------
+    # Figure
+    # -----------------------------------------------------------------------
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    ax.set_aspect('equal')
+
+    # -- Vessel --------------------------------------------------------------
+    vessel_plotted = False
     try:
-        print('Plotting vessel')
         Rv_in, Rv_out, Zv_in, Zv_out, Zt, Rt = plotVessel(idata)
-        print('Plotting vessel')
-        R_fill = np.concatenate([Rv_in, np.flipud(Rv_out)])
-        Z_fill = np.concatenate([Zv_in, np.flipud(Zv_out)])
-        Rt_fill = np.concatenate([Rt, Rv_in])
-        Zt_fill = np.concatenate([Zt, Zv_in])
-        ax1.fill(R_fill, Z_fill, color=[0.4, 0.4, 0.4], edgecolor='none', zorder=13)
-        ax1.fill(Rt_fill, Zt_fill, color=[0.5, 0.5, 0.5], edgecolor='none', zorder=13)
+        R_fill = np.concatenate([Rv_in,  np.flipud(Rv_out)])
+        Z_fill = np.concatenate([Zv_in,  np.flipud(Zv_out)])
+        ax.fill(R_fill,                               Z_fill,
+                color=[0.4, 0.4, 0.4], edgecolor='none', zorder=13)
+        ax.fill(np.concatenate([Rt, Rv_in]),
+                np.concatenate([Zt, Zv_in]),
+                color=[0.5, 0.5, 0.5], edgecolor='none', zorder=13)
         vessel_plotted = True
-    except:
-        print('No vessel data found')
-        vessel_plotted = False
-        pass
+        print('Vessel plotted.')
+    except Exception:
+        print('No vessel data found, skipping.')
 
-    # ... fluctuation envelope ...
-    if not idata.scattering:
-        reds_map = matplotlib.colormaps.get_cmap('Reds')
-        #ax1.set_facecolor(reds_map(0.))
-        Ne = IntSample(R1d, Z1d, Eq.NeInt.eval)
-        c1 = ax1.pcolormesh(R1d, Z1d, Ne, cmap='Reds', vmin=0., alpha=.9, zorder=0)
-        colorbarNe = plt.colorbar(c1, orientation='vertical', pad=.05, shrink=.7)
-        colorbarNe.set_label(label=r'$n_e [1e19 m^{-3}]$', size=13)
+    # -- Background: fluctuation amplitude (or density when scattering is off) --
+    if idata.scattering:
+        # Display RMS absolute fluctuation δne = (δne/ne) · ne,
+        # masked beyond ψ = _PSI_FLUCT_CUTOFF to avoid artefacts outside the plasma.
+        delta_ne = np.where(equilibrium < _PSI_FLUCT_CUTOFF, fluct.T * Ne, 0.)
+        c_bg = ax.pcolormesh(R1d, Z1d, delta_ne,
+                             cmap='Reds', vmin=0., vmax=np.max(delta_ne), alpha=0.9, zorder=0)
+        cb_bg = plt.colorbar(c_bg, ax=ax, orientation='vertical', pad=0.05, shrink=0.7)
+        cb_bg.set_label(r'$\mathrm{RMS}\ \delta n_e\ [10^{19}\ \mathrm{m}^{-3}]$', size=13)
     else:
-        Ne = IntSample(R1d, Z1d, Eq.NeInt.eval)
-        deltaNe = np.where(equilibrium<1.6, fluct.T*Ne, 0)
-        c1 = ax1.pcolormesh(R1d, Z1d, deltaNe, cmap='Reds', vmin=0., vmax=1, alpha=.9, zorder=0)
-        colorbarFluct = plt.colorbar(c1, orientation='vertical', pad=.05, shrink=.7)
-        #colorbarFluct.set_label(label=r'$\langle \delta n_e\rangle /n_e$', size=16)
-        colorbarFluct.set_label(label=r'$RMS\ \delta n_e [1e19 m^{-3}]$', size=13)
-    ### colorbarFluct.set_label(r'')
-    # ... flux surfaces ...
-    lines = np.arange(0, np.amax(equilibrium), 0.1)
-    ax1.contour(R1d, Z1d, np.sqrt(equilibrium), lines, colors='grey', linestyles='dashed', linewidths=1, zorder=3)
-    ax1.contour(R1d, Z1d, np.sqrt(equilibrium), [1.], colors='black', linestyles='solid', linewidths=1, zorder=6)
-    ax1.set_xlabel('$R$ [cm]') 
-    ax1.set_ylabel('$Z$ [cm]')
-    ax1.set_title('Wave propagation \n through fluctuations', fontsize=20)
-    
-    # If vessel is plotted, set everything that is outside the vessel to white
-    if vessel_plotted:
+        c_bg = ax.pcolormesh(R1d, Z1d, Ne,
+                             cmap='Reds', vmin=0., alpha=0.9, zorder=0)
+        cb_bg = plt.colorbar(c_bg, ax=ax, orientation='vertical', pad=0.05, shrink=0.7)
+        cb_bg.set_label(r'$n_e\ [10^{19}\ \mathrm{m}^{-3}]$', size=13)
 
+    # -- Flux surface contours -----------------------------------------------
+    if has_flux_surfaces:
+        rho = np.sqrt(equilibrium)
+        ax.contour(R1d, Z1d, rho, np.arange(0., np.amax(rho), 0.1),
+                   colors='grey', linestyles='dashed', linewidths=1, zorder=3)
+        ax.contour(R1d, Z1d, rho, [1.],
+                   colors='black', linestyles='solid',  linewidths=1, zorder=6)
+
+    # -- White mask outside the vessel boundary ------------------------------
+    if vessel_plotted:
         from matplotlib.path import Path
-        # Create a Path object from the contour
-        contour_path = Path(np.column_stack((Rt, Zt)))
-        RR = np.tile(R1d, (nptZ, 1))
-        ZZ = np.tile(Z1d, (nptR, 1)).T
+        vessel_path = Path(np.column_stack([Rt, Zt]))
+        RR_eq = np.tile(R1d, (nptZ, 1))
+        ZZ_eq = np.tile(Z1d, (nptR, 1)).T
+        outside = ~vessel_path.contains_points(
+            np.column_stack([RR_eq.ravel(), ZZ_eq.ravel()])
+        ).reshape(RR_eq.shape)
+        c_trans  = clrs.colorConverter.to_rgba('white', alpha=0.)
+        c_opaque = clrs.colorConverter.to_rgba('white', alpha=1.)
+        mask_cmap = clrs.LinearSegmentedColormap.from_list(
+            'vessel_mask', [c_trans, c_opaque], 512)
+        ax.pcolormesh(RR_eq, ZZ_eq, outside, cmap=mask_cmap, zorder=8)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
 
-        # Flatten grid arrays and check which points are inside the contour
-        points = np.column_stack((RR.ravel(), ZZ.ravel()))
-        mask = ~contour_path.contains_points(points)  # Invert mask: True outside
+    # -- Beam energy density overlays ----------------------------------------
+    c_white_semi = clrs.colorConverter.to_rgba('white', alpha=0.8)
+    for i, beam in enumerate(beams):
+        # 2-D coordinate mesh for this beam's grid [cm]
+        _, RR_b = np.meshgrid(beam['Z_cm'], beam['R_cm'])   # (nR, nZ), R values
+        ZZ_b, _ = np.meshgrid(beam['Z_cm'], beam['R_cm'])   # (nR, nZ), Z values
 
-        # Reshape mask back to 2D
-        mask = mask.reshape(RR.shape)
+        Q = beam['Wfct']
+        cb_label = (f'$|E|^2\ (\\mathrm{{J/m}}^3)$\n'
+                    f'$f = {beam["FreqGHz"]:.1f}\ \\mathrm{{GHz}}$')
 
-        # Plot a white rectangle over the points outside the contour
-        c_white_trans = clrs.colorConverter.to_rgba('white', alpha=0.)
-        c_white = clrs.colorConverter.to_rgba('white', alpha=1.)
-        transMap_help = clrs.LinearSegmentedColormap.from_list('transMap_help',  
-            [c_white_trans, c_white], 512)
+        # Build a semi-transparent colourmap: low values fade into the background
+        colour    = _BEAM_COLOURS[i % len(_BEAM_COLOURS)]
+        cmap_full = clrs.LinearSegmentedColormap.from_list(
+            'beam_full', [c_white_semi, colour], 512)
+        cmap_beam = clrs.LinearSegmentedColormap.from_list(
+            'beam', [cmap_full(0.25), colour], 512)
+        cmap_beam.set_under(alpha=0.)
 
-        ax1.pcolormesh(RR, ZZ, mask, cmap=transMap_help, zorder=8)
-        # And turn the axis borders transparent
-        ax1.spines['top'].set_visible(False)
-        ax1.spines['right'].set_visible(False)
-        ax1.spines['bottom'].set_visible(False)
-        ax1.spines['left'].set_visible(False)
+        upper = np.amax(Q)
+        lower = upper * 1e-2   # display values down to 1 % of peak
 
-    #Then plot the propagation of the wave on top.
-    
-    
-    # Create a colormap that is nice and blends easily into the background,
-    # while not sacrificing visibility of having it being completely see-through for low values 
-    
-    
-    #This color matches my slides, cheers ED
-    clrs_Ewout = ['#007480', '#413C3A', '#00A79F']
-    c_white_trans = clrs.colorConverter.to_rgba('white', alpha=0.8)
-    Vel_recorded = False
-    for beam in range(len(Wfct)):
-        if Vel_recorded:
-            Quantity = Velocity[beam]
-            #Q = c/100 * Quantity[:,:,0,0]
-            Q = np.sqrt(Quantity[:, :, 0, 0]**2 + Quantity[:, :, 1, 0]**2)
-            #Q = np.where(Wfct[beam][:,:,0]>1e-3, Q/Wfct[beam][:,:,0], 0)
-        else:
-            Quantity = Wfct[beam]
-            Q = Quantity[:,:,0]
+        bm = ax.pcolormesh(RR_b, ZZ_b, Q,
+                           vmin=lower, vmax=upper, cmap=cmap_beam, zorder=9)
+        cb_beam = plt.colorbar(bm, ax=ax, orientation='vertical', pad=0.1, shrink=0.7)
+        cb_beam.set_label(cb_label, size=10, labelpad=-30, y=1.08, rotation=0)
 
-    #The transmap is such that the lower vlues become increasingly transparent,
-    # so we can overlap colormaps. But going all the way to white& transparent is too much
-    # therefore, we cut it off somewhere
-    
-        transMap_help = clrs.LinearSegmentedColormap.from_list('transMap_help',  
-            [c_white_trans, clrs_Ewout[beam]], 512)
-        halfway = transMap_help(.25) #Get the value somwhere along the colormap
-        transMap = clrs.LinearSegmentedColormap.from_list('transMap',
-            [halfway, clrs_Ewout[beam]], 512)
-    
-        #Set the lower bound to be transparent, so we see the background contourf
-        transMap.set_under(color='b', alpha=0.)
-        upperBound = np.amax(Q)
-        lowerBound = upperBound*1e-2 #What's the lowest value we still display?
+    # -- Absorption overlay --------------------------------------------------
+    if any_abs:
+        cmap_abs = matplotlib.colormaps['afmhot'].copy()
+        cmap_abs.set_under(alpha=0.)
+        peak = np.amax(Absorption_total)
+        ab = ax.contourf(RR_b, ZZ_b, Absorption_total,
+                         levels=100, vmin=peak / 20., cmap=cmap_abs, zorder=12)
+        cb_abs = plt.colorbar(ab, ax=ax, orientation='vertical', pad=0.1, shrink=0.7)
+        cb_abs.set_label(r'$P_\mathrm{abs}\ (\mathrm{MW/m}^3)$',
+                         size=10, labelpad=-30, y=1.08, rotation=0)
+        print(f'Total absorbed power: '
+              f'{P_abs_total[0]:.3f} ± {P_abs_total[1]:.3f} MW')
 
-        #beamfig = ax1.contourf(100*RR_beam, 100*ZZ_beam, Q ,100, vmin=lowerBound, cmap=transMap, zorder=9) 
-        beamfig = ax1.pcolormesh(100*RR_beam, 100*ZZ_beam, Q, vmin=lowerBound, vmax=upperBound, cmap=transMap, zorder=9)
-    
-        #Make it so that the colourmap only starts at lowerBound
-        displayedMap = plt.cm.ScalarMappable(norm=clrs.Normalize(lowerBound, upperBound), cmap=transMap)  
-        colorbarBeam = plt.colorbar(beamfig, orientation='vertical', pad=.1, shrink=.7)
-        if Vel_recorded:
-            colorbarBeam.set_label(label=r'$|s| (MW/m^2s)$', size=10, labelpad=-30, y=1.08, rotation=0)
-        else:
-            colorbarBeam.set_label(label=f'|E|² (J/m³)\n f={FreqGHz[beam]}GHz', size=10, labelpad=-30, y=1.08, rotation=0)
+    # -- Cyclotron resonances ------------------------------------------------
+    if has_flux_surfaces:
+        plotting_functions.add_cyclotron_resonances(R1d, Z1d, StixY, ax)
 
-    #Plot the absorption on top of the beam
-    if Abs_recorded:
-        Absorption = np.sum(Absorption, axis=0)
-        cmap_abs = plt.cm.afmhot
-        cmap_abs.set_under(color='b', alpha=0.)
-        abs_fig = ax1.contourf(100*RR_beam,100*ZZ_beam,Absorption[:,:,0], levels=100,vmin=np.amax(Absorption)/20, cmap=cmap_abs, zorder=12)
-        colorbarAbs = plt.colorbar(abs_fig, orientation='vertical', pad=.1, shrink=.7)
-        colorbarAbs.set_label(label=r'$P_{abs} (MW/m³)$', size=10, labelpad=-30, y=1.08, rotation=0)
-        print(f'Total P_abs={P_abs[0]} +- {P_abs[1]}MW')
-    #Plot the cyclotron resonances
-    h1, h2, h3 = plotting_functions.add_cyclotron_resonances(R1d, Z1d, StixY, ax1)
-    
-    #With the beamView parameter, we can specify if we want to see the full equilibrium
-    #or zoomed in on only the beam calculated part
-    try:
-        beamView = idata.beamView
-    except AttributeError:
-        beamView = False
+    # -- Labels and axis limits ----------------------------------------------
+    ax.set_xlabel('$R$ [cm]')
+    ax.set_ylabel('$Z$ [cm]')
+    ax.set_title('Wave propagation\nthrough fluctuations', fontsize=16)
 
-
-    if uniform_bins:
-        if beamView == True:
-            ax1.set_xlim(Xmin_beam, Xmax_beam)
-            ax1.set_ylim(Zmin_beam, Zmax_beam)
-        else:
-            ax1.set_xlim(Rmin, Rmax)
-            ax1.set_ylim(Zmin, Zmax)
-    else:
-        if beamView == True:
-            ax1.set_xlim(Xbins[0], Xbins[-1])
-            ax1.set_ylim(Zbins[0], Zbins[-1])
-        else:
-            ax1.set_xlim(Rmin, Rmax)
-            ax1.set_ylim(Zmin, Zmax)
+    beamView       = getattr(idata, 'beamView', False)
+    Rmin_b, Rmax_b, Zmin_b, Zmax_b = beams[0]['beam_extent']
 
     if vessel_plotted:
-        ax1.set_xlim(np.amin(Rv_out), np.max([np.amax(Rv_out), np.amax(100*RR_beam)]))
-        ax1.set_ylim(np.amin(Zv_out), np.max([np.amax(Zv_out), np.amax(100*ZZ_beam)]))
-    plt.show()
+        # Show the full vessel, but always include the beam region
+        ax.set_xlim(np.amin(Rv_out), max(np.amax(Rv_out), Rmax_b))
+        ax.set_ylim(np.amin(Zv_out), max(np.amax(Zv_out), Zmax_b))
+    elif beamView:
+        ax.set_xlim(Rmin_b, Rmax_b)
+        ax.set_ylim(Zmin_b, Zmax_b)
+    else:
+        ax.set_xlim(Rmin, Rmax)
+        ax.set_ylim(Zmin, Zmax)
 
-    # return
-    pass
+    plt.tight_layout()
+    plt.show()
 #
 # END OF FILE

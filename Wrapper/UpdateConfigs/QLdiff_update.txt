@@ -1,9 +1,0 @@
-configfile              = 'RayTracing.txt'
-manual_grids            = False
-gridfile                = 'WKBacca_grids.mat'
-outputdirectory         = 'output/'
-outputfilename          = 'QLdiff_binned'
-absorption_file         = 'Absorption.txt'
-absorption_data_file    = 'Absorption_binned.hdf5'
-harmonics               = [2]
-DKE_calc                = 0
