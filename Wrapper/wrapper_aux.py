@@ -568,6 +568,7 @@ class SimulationSetup:
                             manual_grids=False,
                             gridfile='WKBacca_grids.mat',
                             outputfilename='QLdiff_binned',
+                            rhothetaN_outputfilename='RhoThetaN_binned',
                             absorption_file='Absorption.txt',
                             absorption_data_file='Absorption_binned.hdf5',
                             **extra):
@@ -579,6 +580,9 @@ class SimulationSetup:
         manual_grids : bool     Set ``True`` to specify p/ksi grids manually.
         gridfile : str          MATLAB grid file for momentum-space grid.
         outputfilename : str    Output HDF5 base name.
+        rhothetaN_outputfilename : str
+            Base name of the RhoThetaN-binned HDF5 (must match the outputfilename
+            used in :meth:`make_rhothetaN_config`).
         absorption_file : str   Config file for the absorption binning step.
         absorption_data_file : str  Binned absorption HDF5 filename.
         **extra                 Any other parameter to override (e.g. pmin, pmax, np, nksi).
@@ -586,6 +590,7 @@ class SimulationSetup:
         overrides = {
             'outputdirectory':      self.output_dir,
             'outputfilename':       outputfilename,
+            'binned_data_filename': rhothetaN_outputfilename + '.hdf5',
             'harmonics':            harmonics if harmonics is not None else [2],
             'manual_grids':         manual_grids,
             'gridfile':             gridfile,

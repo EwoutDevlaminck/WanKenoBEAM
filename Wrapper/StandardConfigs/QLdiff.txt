@@ -26,6 +26,10 @@ outputfilename          = 'QLdiff_binned'
 
 absorption_file         = 'Absorption.txt'
 absorption_data_file    = 'Absorption_binned.hdf5'
+
+# name of the RhoThetaN-binned HDF5 file produced by the RhoThetaN binning step
+# (must match the outputfilename in the RhoThetaN config)
+binned_data_filename    = 'RhoThetaN_binned.hdf5'
 ##########################################################################
 
 # CALCULATION SPECIFICS
