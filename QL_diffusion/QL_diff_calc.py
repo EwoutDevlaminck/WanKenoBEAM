@@ -20,6 +20,7 @@ from Tools.PlotData.PlotAbsorptionProfile.plotabsprofile import compute_depositi
 
 # WKBacca functions import
 from QL_diffusion.QL_diff_aux import *
+from QL_diffusion.QL_diff_aux import _compute_Edens  # underscore names excluded from import *
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +365,7 @@ def call_QLdiff(input_file):
             Trapksi0_h_loc, Trapksi0_w_loc = \
                 D_RF([psi_value], thetabins, p_norm_w, p_norm_h, ksi0_w, ksi0_h,
                      Npar, Nperp, Edens_slice, Eq, Ne_ref, Te_ref,
-                     n=harmonics, FreqGHz=FreqGHz, DKE_calc=DKE_calc)
+                     n=harmonics, FreqGHz=FreqGHz, DKE_calc=DKE_calc, gaussian_smooth=True)
 
             result_data = (
                 DRF0_wh_loc[0],  DRF0D_wh_loc[0],  DRF0F_wh_loc[0],

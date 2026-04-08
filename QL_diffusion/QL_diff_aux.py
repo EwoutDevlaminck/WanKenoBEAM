@@ -379,7 +379,7 @@ def bounce_sum(d_theta_grid_j, CB_j, Func, passing, sigma_dep=False):
 #---THIS IS THE MAIN FUNCTION---#
 #-------------------------------#
 
-def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, Eq, Ne_ref, Te_ref, n=[2, 3], FreqGHz=82.7, DKE_calc=False, gaussian_smooth=False, gaussian_sigma=2, eps=np.finfo(np.float32).eps):
+def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, Eq, Ne_ref, Te_ref, n=[2, 3], FreqGHz=82.7, DKE_calc=False, gaussian_smooth=False, gaussian_sigma=2, symmetrise_trapped=True, eps=np.finfo(np.float32).eps):
 
     """
     The main function to calculate the RF diffusion coefficients.
@@ -897,6 +897,43 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
 
                     DRF0F_wh[l, :, :, n_idx] = gaussian_filter(DRF0F_wh[l, :, :, n_idx], sigma=gaussian_sigma)
                     DRF0F_hw[l, :, :, n_idx] = gaussian_filter(DRF0F_hw[l, :, :, n_idx], sigma=gaussian_sigma)
+
+        #---------------------------------------------------------#
+        # Optional ξ₀ ↔ −ξ₀ symmetrisation in the trapped region #
+        #---------------------------------------------------------#
+        if symmetrise_trapped:
+            # Trapped particles bounce between two mirror points and therefore
+            # visit both signs of ξ along their orbit.  Consequently they can
+            # resonate with waves at both +N_∥ and −N_∥, but the bounce integral
+            # above only sees one sign (determined by sign(ξ₀)).  Averaging
+            # D_RF(ξ₀) with D_RF(−ξ₀) for every trapped ξ₀ corrects this,
+            # enforcing the physical symmetry D_RF(ξ₀) = D_RF(−ξ₀) in the
+            # trapped region (equivalent to the mhu-flip in rfdiff_dke_jd.m).
+            # Note: DKE drag/convection terms are odd in ξ₀ and are left unchanged.
+
+            trap_h = float(Trapksi0_h[l])
+            trap_w = float(Trapksi0_w[l])
+
+            # ksi0_h grid  →  DRF0_wh and DRF0_hh
+            for j in range(len(ksi0_h)):
+                if abs(ksi0_h[j]) <= trap_h:
+                    j_m = int(np.argmin(np.abs(ksi0_h + ksi0_h[j])))
+                    if j < j_m:  # process each (j, j_mirror) pair exactly once
+                        avg = (DRF0_wh[l, :, j, :] + DRF0_wh[l, :, j_m, :]) / 2
+                        DRF0_wh[l, :, j, :]  = avg
+                        DRF0_wh[l, :, j_m, :] = avg
+                        avg = (DRF0_hh[l, :, j, :] + DRF0_hh[l, :, j_m, :]) / 2
+                        DRF0_hh[l, :, j, :]  = avg
+                        DRF0_hh[l, :, j_m, :] = avg
+
+            # ksi0_w grid  →  DRF0_hw
+            for j in range(len(ksi0_w)):
+                if abs(ksi0_w[j]) <= trap_w:
+                    j_m = int(np.argmin(np.abs(ksi0_w + ksi0_w[j])))
+                    if j < j_m:
+                        avg = (DRF0_hw[l, :, j, :] + DRF0_hw[l, :, j_m, :]) / 2
+                        DRF0_hw[l, :, j, :]  = avg
+                        DRF0_hw[l, :, j_m, :] = avg
                 
     return DRF0_wh, DRF0D_wh, DRF0F_wh, DRF0_hw, DRF0D_hw, DRF0F_hw, DRF0_hh, DRF0D_hh, Trapksi0_h, Trapksi0_w
 
