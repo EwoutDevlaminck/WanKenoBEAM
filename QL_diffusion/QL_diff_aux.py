@@ -175,11 +175,27 @@ def minmaxB(BInt_at_psi, theta):
 
 #-------------------------------#
 
-def Trapping_boundary(ksi0, BInt_at_psi, theta_grid=[], eps = np.finfo(np.float32).eps):
+def Trapping_boundary(ksi0, BInt_at_psi, theta_grid=[], B0_in=None, Bmax_in=None, eps = np.finfo(np.float32).eps):
+    """Compute the trapping boundary pitch angle and bounce theta limits.
+
+    Parameters
+    ----------
+    ksi0        : array of pitch-angle cosines (at B_min) to classify
+    BInt_at_psi : callable B(theta) on this flux surface (still needed for
+                  the theta_root fsolve even when B0/Bmax are precomputed)
+    theta_grid  : 1-D array of poloidal angles used by the internal minimiser
+                  (only required when B0_in or Bmax_in is None)
+    B0_in       : optional precomputed B_min on this flux surface; if given,
+                  skips the internal minmaxB call (use Eq.BminInt(psi))
+    Bmax_in     : optional precomputed B_max; paired with B0_in
+    """
     TrapB = np.zeros_like(ksi0)
     theta_roots = np.zeros((len(ksi0), 2))
 
-    B0, Bmax = minmaxB(BInt_at_psi, theta_grid)
+    if B0_in is not None and Bmax_in is not None:
+        B0, Bmax = B0_in, Bmax_in
+    else:
+        B0, Bmax = minmaxB(BInt_at_psi, theta_grid)
     TrapB = B0/(1-ksi0**2)# + eps) # Might revision, is eps needed?
     Trapksi0 = np.sqrt(1-B0/Bmax)
 
@@ -507,12 +523,16 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
         # B-field interpolant used by Trapping_boundary (needs extrapolation for safety)
         ptB_Int_at_psi = interp1d(theta_h, ptB[l, :], fill_value=np.amax(ptB[l, :]), bounds_error=False)
 
-        _, Trapksi0_w[l], theta_T_w[l] = Trapping_boundary(ksi0_w, ptB_Int_at_psi, theta_h)
-        _, Trapksi0_h[l], theta_T_h[l] = Trapping_boundary(ksi0_h, ptB_Int_at_psi, theta_h)
+        # B_min and B_max from the ptB interpolant — must be self-consistent
+        # with B_at_psi values used later in ksi_vals = sqrt(1 - B/B0*(1-ksi0²)).
+        # Eq.BminInt/BmaxInt use a different theta grid and can give B0 lower
+        # than min(ptB), which would make B_ratio > 1 everywhere and cause NaN.
+        B0_psi, Bmax_psi = minmaxB(ptB_Int_at_psi, theta_h)
 
-        # Minimum B on this flux surface — used as B0 in the bounce integral.
-        # Called once per psi (previously called once per ksi inside both ksi loops).
-        B0_psi, _ = minmaxB(ptB_Int_at_psi, theta_h)
+        _, Trapksi0_w[l], theta_T_w[l] = Trapping_boundary(ksi0_w, ptB_Int_at_psi, theta_h,
+                                                             B0_in=B0_psi, Bmax_in=Bmax_psi)
+        _, Trapksi0_h[l], theta_T_h[l] = Trapping_boundary(ksi0_h, ptB_Int_at_psi, theta_h,
+                                                             B0_in=B0_psi, Bmax_in=Bmax_psi)
 
         # Per-field interpolants over theta_h, built once per psi.
         # Trapped-particle branches need to evaluate these on a shifted theta grid;

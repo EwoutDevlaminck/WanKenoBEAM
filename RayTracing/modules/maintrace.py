@@ -64,6 +64,18 @@ def mainTrace(idata, comm):
     # create TraceRay-object
     TraceRay = TraceOneRay(idata, rank)
 
+    # Load qlabs EDF once per MPI worker before the ray loop.
+    # qlabs_init stores the distribution function in Fortran module-level
+    # storage; all subsequent qlabs_absorption calls within this worker use it.
+    if getattr(idata, 'absorptionModule', 1) == 2:
+        from RayTracing.lib.qlabs.qlabsECabsorption import qlabs_init
+        from RayTracing.lib.qlabs.qlabs_loader import load_luke_edf
+        # Check if the flag for a Maxwellian distribution is set in the input file. If so, use the flag
+
+        maxwellian = getattr(idata, 'qlabs_maxwellian', False)
+        _p_mc, _xi_g, _psi_g, _f0 = load_luke_edf(idata.qlabs_edf_file, maxwellian=maxwellian)
+        qlabs_init(_p_mc, _xi_g, _psi_g, _f0)
+
     # see, if stretch to right length should be turned off.
     # This stretches the refractive index vector to a length
     # such that it fullfills exactly the dispersion relation.

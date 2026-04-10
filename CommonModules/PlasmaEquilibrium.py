@@ -792,13 +792,84 @@ class MagneticSurfaces(object):
       
         return 2.*math.pi * self.rmaj * area / 1.e6
 
+    def _compute_Bmin_Bmax(self, n_psi=60, n_theta=48):
+        """Build BminInt(psi) and BmaxInt(psi) — 1-D cubic splines giving the
+        accurate minimum and maximum total magnetic field strength on each flux
+        surface.
+
+        Algorithm: for each psi value, sample n_theta poloidal angles using
+        flux_to_grid_coord, build a cubic interpolant of B(theta), then use
+        minimize_scalar to locate the true global min and max (mirrors the
+        minmaxB approach in QL_diff_aux.py).
+
+        Adds attributes:
+          self.BminInt(psi)  — callable, B_min [T] on flux surface psi ∈ [0, 1]
+          self.BmaxInt(psi)  — callable, B_max [T] on flux surface psi ∈ [0, 1]
+        Both return the boundary value for psi outside [0, 1] (ext=3 clamp).
+
+        Called automatically in TokamakEquilibrium.__setup__ for numerical
+        equilibria (analytical models do not set self.Bgrid).
+        """
+        from scipy.interpolate import UnivariateSpline, interp1d
+        from scipy.optimize import minimize_scalar
+
+        theta_sample = np.linspace(-np.pi, np.pi, n_theta, endpoint=False)
+
+        # Shift arrays for the max search (same trick as minmaxB in QL_diff_aux)
+        half = n_theta // 2
+        theta_shift = np.concatenate((theta_sample[half:],
+                                      theta_sample[:half] + 2.0 * np.pi))
+
+        psi_arr  = np.linspace(0.01, 0.98, n_psi)
+        Bmin_arr = np.zeros(n_psi)
+        Bmax_arr = np.zeros(n_psi)
+
+        for i, psi_val in enumerate(psi_arr):
+            B_vals = np.empty(n_theta)
+            for k, th in enumerate(theta_sample):
+                Rz = self.flux_to_grid_coord(psi_val, th)
+                R, z = Rz[0], Rz[1]
+                Bt = float(self.BtInt.eval(R, z))
+                BR = float(self.BRInt.eval(R, z))
+                Bz = float(self.BzInt.eval(R, z))
+                B_vals[k] = np.sqrt(Bt**2 + BR**2 + Bz**2)
+
+            # Cubic interpolant for B(theta) on this flux surface
+            B_int = interp1d(theta_sample, B_vals, kind='cubic',
+                             bounds_error=False, fill_value='extrapolate')
+
+            # Shifted interpolant of -B for max search
+            B_shift = np.concatenate((B_vals[half:], B_vals[:half]))
+            negB_shift_int = interp1d(theta_shift, -B_shift, kind='cubic',
+                                      bounds_error=False, fill_value='extrapolate')
+
+            res_min = minimize_scalar(B_int, bounds=(-np.pi, np.pi),
+                                      method='bounded')
+            res_max = minimize_scalar(negB_shift_int, bounds=(0.0, 2.0 * np.pi),
+                                      method='bounded')
+            Bmin_arr[i] = float(B_int(res_min.x))
+            Bmax_arr[i] = float(-negB_shift_int(res_max.x))
+
+        # Anchor at the magnetic axis (psi = 0): B_min = B_max = B_axis
+        Rax, Zax = self.magn_axis_coord_Rz
+        B_ax = float(np.sqrt(self.BtInt.eval(Rax, Zax)**2 +
+                             self.BRInt.eval(Rax, Zax)**2 +
+                             self.BzInt.eval(Rax, Zax)**2))
+
+        psi_pts  = np.concatenate([[0.0], psi_arr])
+        Bmin_pts = np.concatenate([[B_ax], Bmin_arr])
+        Bmax_pts = np.concatenate([[B_ax], Bmax_arr])
+        # ext=3: return the boundary value for psi outside [0, 1]
+        self.BminInt = UnivariateSpline(psi_pts, Bmin_pts, s=0, k=3, ext=3)
+        self.BmaxInt = UnivariateSpline(psi_pts, Bmax_pts, s=0, k=3, ext=3)
+
 #
 # End of class MagneticSurfaces
 
 
 
 ###############################################################################
-# TokamakEquilibrium CLASS. 
+# TokamakEquilibrium CLASS.
 # READS THE INPUT FILES AND INTERPOLATES THE MAGNETIC FIELD,
 # ELECTRON DENSITY, AND ELECTRON TEMPERATURE 
 # THIS APPLIES STRICTLY TO TOKAMAK GEOMETRY ONLY! 
@@ -928,6 +999,10 @@ class TokamakEquilibrium(MagneticSurfaces):
             
             # Interpolation object for the vertical field
             self.BzInt = bispl.BiSpline(Rgrid1D, zgrid1D, self.Bgrid[1,:,:])
+
+            # B_min(psi) and B_max(psi) splines — used for trapped-particle
+            # corrections in qlabs and for bounce-integral boundaries in QL_diff_aux
+            self._compute_Bmin_Bmax()
 
             # Load the electron density profile
             input_dir = idata.equilibriumdirectory
@@ -1154,6 +1229,9 @@ class TokamakEquilibrium2(MagneticSurfaces):
             
             # Interpolation object for the vertical field
             self.BzInt = bispl.BiSpline(Rgrid1D, zgrid1D, self.Bgrid[1,:,:])
+
+            # B_min(psi) and B_max(psi) splines
+            self._compute_Bmin_Bmax()
 
             # Load the electron density and temperature profile
             input_dir = idata.equilibriumdirectory

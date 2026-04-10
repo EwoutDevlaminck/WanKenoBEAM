@@ -1,0 +1,5 @@
+{
+    "python.defaultInterpreterPath": "/home/devlamin/WanKenoBEAM/venv/bin/python3",
+    "python.terminal.activateEnvironment": true,
+    "python.terminal.activateEnvInCurrentTerminal": true
+}

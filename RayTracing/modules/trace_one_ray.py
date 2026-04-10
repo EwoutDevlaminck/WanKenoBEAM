@@ -25,6 +25,7 @@ from RayTracing.modules.atanrightbranch import atanRightBranch
 from RayTracing.modules.dispersion_matrix_cfunctions import *
 from RayTracing.lib.ecdisp.farinaECabsorption import warmdamp
 from RayTracing.lib.westerino.westerinoECabsorption import dampbq
+from RayTracing.lib.qlabs.qlabsECabsorption import qlabs_absorption
 
 
 ############################################################################
@@ -259,10 +260,24 @@ class TraceOneRay(object):
             refractdamp = warmdamp(parAlpha, parBeta,                    # plasma parameters
                                    Nnorm, math.acos(Nparallel / Nnorm),  # refractive index vector
                                    Te, sigma)                            # temperature and mode
-            
+
             # correct the result as in TORBEAM:
             # in this case the output is directly equal to absImN defined above
             absImN = refractdamp
+
+        if self.absorptionModule == 2:   # qlabs — arbitrary EDF from LUKE
+            # b_over_bmin = B_local / B_min(psi): needed by qlabs to exclude
+            # magnetically trapped electrons from the resonance integral.
+            # BminInt is a 1-D cubic spline built by _compute_Bmin_Bmax() at
+            # equilibrium load time; it is accurate because it uses the same
+            # BiSpline interpolants as Bnorm, so b_over_bmin >= 1 is guaranteed
+            # up to minor spline oscillation (clamped by max(1.0, ...)).
+            b_over_bmin = max(1.0, Bnorm / float(self.Eq.BminInt(psi)))
+            absImN = qlabs_absorption(parAlpha, parBeta,
+                                      Nnorm, math.acos(Nparallel / Nnorm),
+                                      Te, sigma,
+                                      psi,
+                                      b_over_bmin)
 
         # THE FOLLOWING IS NOT RIGOROUS, BUT IT IS THE WAY THE TWO ABSORPTION
         # ROUTINES (FROM EXTERNAL LIBRARIES) ARE DESIGNED TO WORK AND IT IS

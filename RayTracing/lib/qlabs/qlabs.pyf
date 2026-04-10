@@ -1,0 +1,65 @@
+!    -*- f90 -*-
+! f2py interface for the qlabs EC absorption module.
+! Exposes two subroutines to Python:
+!   qlabs_init        — load the LUKE EDF (call once per run)
+!   qlabs_absorption  — per-point Im(N⊥) with arbitrary EDF
+!
+! NOTE: This .pyf file is kept for documentation purposes only.
+! The build (Makefile wrap target) uses qlabs_wrap.f90 instead.
+!
+! Reason: qlabs_init and qlabs_absorption are defined inside 'module qlabs',
+! giving linker symbols __qlabs_MOD_name that f2py cannot resolve.  The
+! 'use qlabs' clauses below produce the warning:
+!   "get_useparameters: no module qlabs info used by qlabs_init"
+! and the resulting .so fails with "undefined symbol: qlabs_init_".
+! qlabs_wrap.f90 provides standalone subroutines with the correct symbols.
+
+python module qlabsECabsorption
+    interface
+
+        ! ------------------------------------------------------------------
+        ! qlabs_init: load EDF grid and precompute spline derivatives.
+        ! Call once per WanKenoBeam run before any qlabs_absorption call.
+        ! ------------------------------------------------------------------
+        subroutine qlabs_init(p_grid, xi_grid, psi_grid, edf_in, np, nxi, npsi)
+            use qlabs
+            integer, intent(in) :: np, nxi, npsi
+            real*8, intent(in), dimension(np)              :: p_grid
+            real*8, intent(in), dimension(nxi)             :: xi_grid
+            real*8, intent(in), dimension(npsi)            :: psi_grid
+            real*8, intent(in), dimension(np, nxi, npsi)   :: edf_in
+        end subroutine qlabs_init
+
+        ! ------------------------------------------------------------------
+        ! qlabs_absorption: compute Im(N⊥) for the loaded EDF.
+        ! Interface is intentionally identical to warmdamp so that
+        ! trace_one_ray.py needs only a minimal branch addition.
+        !
+        ! Inputs:
+        !   op          = omega_pe^2 / omega^2
+        !   oc          = omega_ce^2 / omega^2   (= sqoc^2)
+        !   Nr          = |N|  (total refractive index modulus)
+        !   theta       = angle between N and B  [radians]
+        !   te          = electron temperature   [keV]
+        !   imod        = wave mode: +1 O-mode, -1 X-mode
+        !   psi_local   = normalised poloidal flux at the ray point
+        !   b_over_bmin = B/B_min at the ray point (trapping correction)
+        ! Output:
+        !   imNprw      = Im(N_perp)  [same sign convention as warmdamp]
+        ! ------------------------------------------------------------------
+        subroutine qlabs_absorption(op, oc, Nr, theta, te, imod, &
+                                     psi_local, b_over_bmin, imNprw)
+            use qlabs
+            real*8,  intent(in)  :: op
+            real*8,  intent(in)  :: oc
+            real*8,  intent(in)  :: Nr
+            real*8,  intent(in)  :: theta
+            real*8,  intent(in)  :: te
+            integer, intent(in)  :: imod
+            real*8,  intent(in)  :: psi_local
+            real*8,  intent(in)  :: b_over_bmin
+            real*8,  intent(out) :: imNprw
+        end subroutine qlabs_absorption
+
+    end interface
+end python module qlabsECabsorption
