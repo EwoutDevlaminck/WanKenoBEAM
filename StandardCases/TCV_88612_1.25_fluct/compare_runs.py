@@ -43,16 +43,19 @@ OUTDIR = os.path.join(_HERE, 'output')
 
 RUNS = {
     'Farina':    os.path.join(OUTDIR, 'L4_Farina_file0.hdf5'),
+    'Westerhof':  os.path.join(OUTDIR, 'L4_Westerhof_file0.hdf5'),
     'qlabs(MJ)': os.path.join(OUTDIR, 'L4_QLabs_M_file0.hdf5'),
     'qlabs(EDF)':os.path.join(OUTDIR, 'L4_QLabs_EDF_file0.hdf5'),
 }
 COLORS = {
     'Farina':    'C0',
-    'qlabs(MJ)': 'C1',
-    'qlabs(EDF)':'C2',
+    'Westerhof': 'C1',
+    'qlabs(MJ)': 'C2',
+    'qlabs(EDF)':'C3',
 }
 LS = {
     'Farina':    '-',
+    'Westerhof': '--',
     'qlabs(MJ)': '--',
     'qlabs(EDF)':':',
 }
@@ -154,7 +157,7 @@ print(f"\nSummary written → {txt_out}")
 # ---------------------------------------------------------------------------
 fig = plt.figure(figsize=(16, 12))
 fig.suptitle(
-    'WKBeam absorption comparison: Farina vs qlabs(MJ) vs qlabs(EDF)\n'
+    'WKBeam absorption comparison: Farina vs Westerhof vs qlabs(MJ) vs qlabs(EDF)\n'
     'TCV 88612, t=1.25s — same rays (freeze_random_numbers=True), scattering off',
     fontsize=11
 )
@@ -168,10 +171,12 @@ for iray in range(5):
         steps = np.where(mask)[0]
         W = d['Wfct'][iray, mask]
         W_norm = W / W[0] if W[0] > 0 else W
-        ax.plot(steps, W_norm, color=COLORS[name], ls=LS[name], lw=1.5, label=name)
+        ax.plot(steps, W_norm, color=COLORS[name], ls=LS[name], lw=2, label=name)
+
+        ax.plot(steps, np.gradient(W_norm), color=COLORS[name], ls=LS[name], lw=1.5, label=None)
     ax.set(xlabel='Step', ylabel='W/W₀',
            title=f'Ray {iray} — Wfct decay')
-    ax.set_ylim(0, 1.05)
+    #ax.set_ylim(0, 1.05)
     if iray == 0:
         ax.legend(fontsize=7)
     ax.grid(True)
@@ -230,7 +235,7 @@ print(f"Ray traces figure saved → {out1}")
 fig3, axes3 = plt.subplots(1, 2, figsize=(12, 4))
 fig3.suptitle('Absorption profile vs ψ (all rays, dW/dψ)', fontsize=11)
 
-psi_bins = np.linspace(0.0, 1.0, 41)
+psi_bins = np.linspace(0.0, 1.0, 100)
 psi_mid  = 0.5 * (psi_bins[:-1] + psi_bins[1:])
 
 for name, d in data.items():
@@ -246,7 +251,7 @@ for name, d in data.items():
         psi_mid_step = 0.5 * (psi_ray[:-1] + psi_ray[1:])
         counts, _ = np.histogram(psi_mid_step, bins=psi_bins, weights=dW)
         dW_dpsi += counts
-    axes3[0].plot(psi_mid, dW_dpsi, color=COLORS[name], ls=LS[name],
+    axes3[0].plot(np.sqrt(psi_mid), dW_dpsi, color=COLORS[name], ls=LS[name],
                   lw=2, label=name)
 
 axes3[0].set(xlabel='ψ', ylabel='Σ dW/bin', title='dW/dψ (raw, all rays)')
@@ -267,7 +272,7 @@ for name, d in data.items():
         dW_dpsi += counts
     total = dW_dpsi.sum()
     if total > 0:
-        axes3[1].plot(psi_mid, dW_dpsi / total, color=COLORS[name], ls=LS[name],
+        axes3[1].plot(np.sqrt(psi_mid), dW_dpsi / total, color=COLORS[name], ls=LS[name],
                       lw=2, label=name)
 
 axes3[1].set(xlabel='ψ', ylabel='dW/dψ (normalised)', title='Absorption shape comparison')
@@ -410,3 +415,96 @@ fig4.tight_layout(rect=[0, 0, 1, 0.93])
 out4 = os.path.join(_HERE, 'compare_trajectories.png')
 fig4.savefig(out4, dpi=150, bbox_inches='tight')
 print(f"Trajectory figure saved → {out4}")
+
+# ---------------------------------------------------------------------------
+# 2-D poloidal trajectory plot coloured by POWER RATIO between runs
+#   Left panel:  W_qlabs(MJ) / W_Farina  — how much power remains relative to Farina
+#   Right panel: W_qlabs(EDF) / W_qlabs(MJ) — quasi-linear correction vs Maxwellian
+#
+# Ratio = 1 (white/yellow) means both runs agree; ratio > 1 means the numerator
+# run has absorbed less power at that point; ratio < 1 means more absorption.
+# A diverging colourmap centered at 1 makes deviations immediately visible.
+# ---------------------------------------------------------------------------
+cmap_ratio = cm.RdYlGn      # green > 1 (less absorbed), red < 1 (more absorbed)
+ratio_norm_MJ  = plt.Normalize(vmin=0.8, vmax=1.2)   # MJ vs Farina: expect ≈ 1
+ratio_norm_EDF = plt.Normalize(vmin=0.8, vmax=1.2)   # EDF vs MJ: expect ≤ 1
+
+fig5, axes5 = plt.subplots(1, 2, figsize=(11, 6), sharey=True)
+fig5.suptitle(
+    '2D ray trajectories — coloured by W ratio between runs\n'
+    'green = numerator has MORE power remaining, red = LESS',
+    fontsize=11
+)
+
+panel_specs = [
+    (axes5[0], 'qlabs(MJ) / Farina',    'qlabs(MJ)', 'Farina',    ratio_norm_MJ),
+    (axes5[1], 'qlabs(EDF) / qlabs(MJ)', 'qlabs(EDF)', 'qlabs(MJ)', ratio_norm_EDF),
+]
+
+for ax, title, num_name, den_name, norm in panel_specs:
+    d_num = data[num_name]
+    d_den = data[den_name]
+
+    # --- background: flux surfaces ---
+    ax.contourf(_R1d, _Z1d, rho_2d,
+                levels=np.linspace(0, 1.05, 22),
+                cmap='Blues_r', alpha=0.35, zorder=0)
+    ax.contour(_R1d, _Z1d, rho_2d,
+               levels=np.arange(0.1, 1.0, 0.1),
+               colors='grey', linewidths=0.7, linestyles='dashed', zorder=1)
+    ax.contour(_R1d, _Z1d, rho_2d,
+               levels=[1.0],
+               colors='black', linewidths=1.2, zorder=2)
+    plotting_functions.add_cyclotron_resonances(_R1d, _Z1d, StixY, ax)
+    if _vessel_R is not None:
+        ax.plot(_vessel_R, _vessel_Z, color='dimgrey', lw=1.5, zorder=3)
+
+    # --- ray segments coloured by W_num / W_den ---
+    for iray in range(nRays):
+        mask_num = active_mask(d_num, iray)
+        mask_den = active_mask(d_den, iray)
+        # Use only steps that are active in both runs
+        mask = mask_num & mask_den
+        if mask.sum() < 2:
+            continue
+
+        R = np.sqrt(d_num['X'][iray, mask]**2 + d_num['Y'][iray, mask]**2)
+        Z = d_num['Z'][iray, mask]
+        W_num = d_num['Wfct'][iray, mask]
+        W_den = d_den['Wfct'][iray, mask]
+
+        # Normalise each run to its own first step so W₀ cancels
+        W_num_norm = W_num / W_num[0] if W_num[0] > 0 else W_num
+        W_den_norm = W_den / W_den[0] if W_den[0] > 0 else W_den
+
+        ratio = np.where(W_den_norm > 0, W_num_norm / W_den_norm, 1.0)
+
+        pts      = np.stack([R, Z], axis=1)
+        segments = np.stack([pts[:-1], pts[1:]], axis=1)
+        c_seg    = 0.5 * (ratio[:-1] + ratio[1:])
+
+        lc = LineCollection(segments, cmap=cmap_ratio, norm=norm,
+                            linewidth=2.5, zorder=4)
+        lc.set_array(c_seg)
+        ax.add_collection(lc)
+        ax.plot(R[0], Z[0], 'o', ms=4, color='white', mec='black', mew=0.6, zorder=5)
+
+    ax.set_xlim(Rlim)
+    ax.set_ylim(Zlim)
+    ax.set_aspect('equal')
+    ax.set_xlabel('R [cm]')
+    ax.set_title(title, fontsize=10)
+
+axes5[0].set_ylabel('Z [cm]')
+
+# Shared colourbar
+sm5 = cm.ScalarMappable(cmap=cmap_ratio, norm=ratio_norm_MJ)
+sm5.set_array([])
+cbar5 = fig5.colorbar(sm5, ax=axes5.tolist(), shrink=0.75, pad=0.02)
+cbar5.set_label('(W/W₀)_numerator / (W/W₀)_denominator\n'
+                '1 = equal absorption, >1 = numerator absorbs less', fontsize=9)
+
+fig5.tight_layout(rect=[0, 0, 1, 0.93])
+out5 = os.path.join(_HERE, 'compare_ratio_trajectories.png')
+fig5.savefig(out5, dpi=150, bbox_inches='tight')
+print(f"Ratio trajectory figure saved → {out5}")

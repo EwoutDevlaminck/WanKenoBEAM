@@ -30,7 +30,7 @@ extend_grid_by                          = (0, 0, 0, 0)
 # directory, where the result file is written
 output_dir = '/home/devlamin/WanKenoBEAM/StandardCases/TCV_88612_1.25_fluct/output/'
 # output filename
-output_filename = 'L4_QLabs_M'
+output_filename = 'L4_QLabs_C3PO'
 
 # if true, the first ray to be traced is the central, most probable one.
 takecentralrayfirst = True                     
@@ -124,10 +124,11 @@ absorption                              = True
 absorptionModule = 2
 
 #if we choose module 2, there's an extra flag for a maxwellian to check
-qlabs_maxwellian = True
+qlabs_maxwellian = False 
 
 # And the file needs to be provided which holds the data
-qlabs_edf_file = '/home/devlamin/WanKenoBEAM/StandardCases/TCV_88612_1.25_fluct/input/EDF.mat'
+qlabs_edf_file = '/home/devlamin/WanKenoBEAM/StandardCases/TCV_88612_1.25_fluct/input/C3PO_QuasiLinear.mat'
+
 
 # for generic Hamiltonians
 absorptionLayerX = 120.

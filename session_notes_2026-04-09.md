@@ -140,9 +140,114 @@ Results:
 
 ---
 
-## Next Steps
+## Next Steps (after session 1)
 
 - Run a full WanKenoBeam trace with `absorptionModule = 2` and the TCV EDF file to verify
   end-to-end qlabs absorption in a real geometry.
 - Set up the QL driver workflow: WanKenoBeam → QL_diffusion → LUKE → new EDF → repeat.
 - Consider adding `qlabs_edf_file` to the standard input template and documentation.
+
+---
+
+# Session Notes — 2026-04-09 (continued, session 2)
+
+## Problem: qlabs giving ~6% of Farina absorption
+
+When running WKBeam with the qlabs module (ratio method) using the LUKE Maxwellian EDF (XXfM),
+computed absorption was only ~6% of the Farina reference run.
+
+---
+
+## Root Cause
+
+The qlabs ratio method computes:
+
+    Im(N⊥) = Im(N⊥)_Maxw × (I_QL / I_Maxw)
+
+For ratio=1 with a Maxwellian EDF, the loaded f_ql and the internal reference
+`f_mj_ref = exp(-mu*(γ-1))` must agree in absolute value on the resonance ellipse.
+Since `exp(-mu*(γ-1)) → 1` at p→0, the loaded EDF must satisfy `f(p_min, xi, psi) ≈ 1`.
+
+**LUKE normalization convention:**
+
+    2π ∫ f_LUKE(p_th, xi, psi) p_th² dp_th dxi = n_e(psi) / n_e_ref
+
+At the smallest grid momentum, `f_LUKE(p_min) ≈ N_norm(psi)`, varying widely with psi:
+
+| psi   | ne/ne_ref | Te_local  | N_norm  |
+|-------|-----------|-----------|---------|
+| 0.005 | 0.8902    | 2.198 keV | ~0.0636 |
+| 0.091 | 1.0000    | 2.297 keV | ~0.0668 |
+| 0.491 | 0.7448    | 0.644 keV | ~0.337  |
+| 0.905 | 0.4356    | 0.188 keV | ~1.252  |
+
+At the hot core (psi≈0), N_norm ≈ 0.064, so I_QL/I_Maxw ≈ 0.064 → ~6% absorption.
+
+---
+
+## Fix: Per-psi normalization in `qlabs_loader.py`
+
+**Design principle**: Keep `qlabs.f90` general and convention-agnostic. Apply LUKE-specific
+normalization at the Python loader layer (analogous to YodaU).
+
+In `RayTracing/lib/qlabs/qlabs_loader.py`, `load_luke_edf()` now divides each psi-slice
+by the mean of f at the first (smallest) momentum grid point:
+
+```python
+N_norm = f0[0, :, :].mean(axis=0)          # shape (npsi,)
+N_norm = np.where(N_norm > 0.0, N_norm, 1.0)
+f0 = f0 / N_norm[np.newaxis, np.newaxis, :]
+```
+
+This ensures `f(p_min, xi, psi) ≈ 1` at every psi, matching `exp(-mu*(γ-1)) ≈ 1` at p→0.
+
+**Result:**
+- XXfM / Farina ≈ 0.975 (97.5%) — the 2.5% residual is expected because p_min ≠ 0
+- All three tiers of `test_vs_damping_ref.py` continue to PASS (test bypasses loader)
+
+---
+
+## Why NOT the YodaU normalization
+
+YodaU uses: `f_normalized = f_LUKE × ne_ref / (beta³ × ne(psi))`
+
+This makes f integrate to 1 over p_mc space — correct for YodaU's direct absorption integral,
+but wrong for the qlabs ratio method. At the core, this factor is ~3168, so f(p_min) >> 1
+while f_mj_ref(p_min) = 1, giving ratio ≈ 7.93 instead of 1.
+
+---
+
+## Why NOT fixing normalization inside `qlabs.f90`
+
+A test was made: compute N_norm from `p_g(1)` inside Fortran and use
+`f_mj_ref = N_norm × exp(-mu*(γ-1))`. This passed the XXfM/Farina test (~97.6%) but broke
+Tier 2/3 of `test_vs_damping_ref.py` because the `distr.dat` reference EDF is Jüttner-
+normalized (f(p_min) ≈ 0.0635), and the Fortran fix incorrectly rescaled its reference.
+
+**Key insight**: Normalization is distribution-format-specific. It belongs in the loader,
+not in the general qlabs physics module.
+
+---
+
+## Files Modified in Session 2
+
+| File | Change |
+|------|--------|
+| `RayTracing/lib/qlabs/qlabs_loader.py` | Replaced YodaU normalization with per-psi `f[0,:,ipsi].mean()` normalization; updated docstring |
+| `RayTracing/lib/qlabs/qlabs.f90` | Reverted N_norm block; restored `f_mj = exp(-mu_bulk*(gamma_res-1))` |
+| `RayTracing/lib/qlabs/qlabs_edf.f90` | Minor revert of comment on `p_g` declaration |
+| `StandardCases/TCV_88612_1.25_fluct/compare_runs.py` | Added `fig5`: two-panel ratio-colored trajectory plot |
+
+### `compare_runs.py` fig5 details
+- Left panel: `W_qlabs(MJ) / W_Farina` (each normalized to its own first step)
+- Right panel: `W_qlabs(EDF) / W_qlabs(MJ)`
+- Colormap: RdYlGn, range [0.8, 1.2]
+- Saved to `compare_ratio_trajectories.png`
+
+---
+
+## Pending Next Steps
+
+1. Re-run three WKBeam simulations: Farina, QLabs_MJ, QLabs_EDF with fixed qlabs_loader.py
+2. Run `compare_runs.py` to generate all figures including new ratio-trajectory plot
+3. Validate that XXf0 (quasi-linear EDF) gives physically meaningful absorption vs. MJ

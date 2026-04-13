@@ -345,15 +345,11 @@ contains
       DERIVF_ql = dfdu_perp * OMC + dfdu_par * ZPERP * PARN
 
       ! --- Maxwell-Juettner at the same (u_par, u_perp): analytical ----------
-      ! f_MJ ∝ exp(-mu*(gamma-1)),  u = p/(m_e c)
-      ! ∂f_MJ/∂u_perp = -f_MJ * mu * u_perp / gamma = -f_MJ * mu * ZPERP / gamma
-      ! ∂f_MJ/∂u_par  = -f_MJ * mu * u_par  / gamma = -f_MJ * mu * ZPAR  / gamma
-      ! DERIVF_mj = (∂f_MJ/∂u_perp)*OMC + (∂f_MJ/∂u_par)*ZPERP*PARN
-      !           = -f_MJ * mu / gamma * ZPERP * (OMC + ZPAR*PARN)
-      ! The mu_bulk factor is essential: it ensures DERIVF_mj is consistent with
-      ! DERIVF_ql (which via edf_eval returns df/du in p_mc units, so for a MJ
-      ! EDF also picks up mu from d(logf)/dp_mc = -mu*p/(gamma)).
-      f_mj = exp(-mu_bulk * (gamma_res - 1.0_r8))  ! Z_norm cancels in ratio
+      ! f is expected to be normalized to 1 (Shkarofsky convention).
+      ! The analytical MJ normalized to 1 is exp(-mu*(gamma-1)) / (4π Θ K₂(1/Θ)),
+      ! but the normalization constant cancels in the ratio I_ql/I_maxw,
+      ! so we only need the exponential part.
+      f_mj = exp(-mu_bulk * (gamma_res - 1.0_r8))
       DERIVF_mj = -f_mj * mu_bulk / gamma_res * &
                   (ZPERP * OMC + ZPAR * ZPERP * PARN)
 

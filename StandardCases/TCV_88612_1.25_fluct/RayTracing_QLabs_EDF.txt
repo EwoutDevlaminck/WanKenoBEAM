@@ -84,10 +84,10 @@ centraleta2 = 0.
 #############################################################################
 # number of integration steps. The integration can be aborded before due to 
 # absorption or leaving the plasma. See the corresponding parameters below
-npt = 1000
+npt = 5000
 
 # timestep for the integration                                      				 
-timestep = 1.
+timestep = 0.2
 
 # regularisation parameter for Hamiltonian 
 # in case of UH-resonance
@@ -104,7 +104,7 @@ integratorreltol = 1e-7
 integratorabstol = 1e-7
 
 # number of rays to trace
-nmbrRays = 50
+nmbrRays = 1000
 
 # number of random numbers generated
 # in order to initialise the Metropolis-
@@ -137,7 +137,7 @@ absorptionLayerX = 120.
 # it is started to compute the absorption coefficient.
 # Before it is set to 0.
 # put 0 if you wish to compute absorption from 0 on 
-absorptionStartEarlierThenCentralRay = 0
+absorptionStartEarlierThenCentralRay = 2.
 
 # treshhold when absorption is considered to
 # be non-negligible.

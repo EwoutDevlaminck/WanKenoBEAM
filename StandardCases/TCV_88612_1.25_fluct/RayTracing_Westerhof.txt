@@ -30,7 +30,7 @@ extend_grid_by                          = (0, 0, 0, 0)
 # directory, where the result file is written
 output_dir = '/home/devlamin/WanKenoBEAM/StandardCases/TCV_88612_1.25_fluct/output/'
 # output filename
-output_filename = 'L4_QLabs_M'
+output_filename = 'L4_Westerhof'
 
 # if true, the first ray to be traced is the central, most probable one.
 takecentralrayfirst = True                     
@@ -104,7 +104,7 @@ integratorreltol = 1e-7
 integratorabstol = 1e-7
 
 # number of rays to trace
-nmbrRays = 1000
+nmbrRays = 50
 
 # number of random numbers generated
 # in order to initialise the Metropolis-
@@ -120,14 +120,7 @@ absorption                              = True
 # in case, plasma is considered
 # 0 --> Westerhof absorption routine used
 # 1 --> Farina absorption routine used
-# 2 --> QLabs absorption routine is used
-absorptionModule = 2
-
-#if we choose module 2, there's an extra flag for a maxwellian to check
-qlabs_maxwellian = True
-
-# And the file needs to be provided which holds the data
-qlabs_edf_file = '/home/devlamin/WanKenoBEAM/StandardCases/TCV_88612_1.25_fluct/input/EDF.mat'
+absorptionModule = 0
 
 # for generic Hamiltonians
 absorptionLayerX = 120.
