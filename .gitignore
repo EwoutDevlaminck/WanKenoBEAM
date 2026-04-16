@@ -22,3 +22,7 @@ build/
 
 # Shell scripts
 *.sh
+
+# output datafiles
+*.h5
+*.hdf5

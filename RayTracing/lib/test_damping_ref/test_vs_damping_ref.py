@@ -168,6 +168,15 @@ d11_mj, d12_mj, d13_mj, d22_mj, d32_mj, d33_mj = \
     damping_ref_ec(f_sph_mj_fort, PMAX_dat,
                    OMC_ref, PARN_ref, PERPN_ref, BTH_ref, NH_ref)
 
+#Normalise these to 1e-2 * OMP2_ref for easier comparison (damping_ref returns values ~1e-3 to 1e-2 at these parameters)
+scale = 1e-2 * OMP2_ref
+d11_mj /= scale
+d12_mj /= scale
+d13_mj /= scale
+d22_mj /= scale
+d32_mj /= scale
+d33_mj /= scale
+
 print(f"\ndamping_ref (MJ EDF):")
 print(f"  dint11={d11_mj:.4e}  dint22={d22_mj:.4e}  dint33={d33_mj:.4e}")
 print(f"  dint12={d12_mj:.4e}  dint13={d13_mj:.4e}  dint32={d32_mj:.4e}")
@@ -207,6 +216,13 @@ f_sph_edf_fort = np.asfortranarray(f_sph_edf)
 d11_edf, d12_edf, d13_edf, d22_edf, d32_edf, d33_edf = \
     damping_ref_ec(f_sph_edf_fort, PMAX_dat,
                    OMC_ref, PARN_ref, PERPN_ref, BTH_ref, NH_ref)
+
+d11_edf /= scale
+d12_edf /= scale
+d13_edf /= scale
+d22_edf /= scale
+d32_edf /= scale
+d33_edf /= scale
 
 print(f"\ndamping_ref (distr.dat EDF):")
 print(f"  dint11={d11_edf:.4e}  dint22={d22_edf:.4e}  dint33={d33_edf:.4e}")
