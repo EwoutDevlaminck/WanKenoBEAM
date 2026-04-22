@@ -357,7 +357,7 @@ def D_RF_nobounce(p_norm_w, ksi, npar, nperp, Wfct, Te, P, X, R, L, S, harm, eps
             key = (i_npar, i_nperp)
             if key not in pol_cache:
                 N2      = nperp[i_nperp]**2 + npar[i_npar]**2
-                K_angle = np.arctan2(npar[i_npar], nperp[i_nperp])
+                K_angle = np.arctan2(nperp[i_nperp], npar[i_npar])
                 pol     = polarisation(N2, K_angle, P, R, L, S)
                 # Pre-multiply the geometry and Wfct weight (independent of p_norm)
                 pol_cache[key] = (pol,
@@ -367,9 +367,10 @@ def D_RF_nobounce(p_norm_w, ksi, npar, nperp, Wfct, Te, P, X, R, L, S, harm, eps
 
             # Bessel argument and polarisation term depend on p_norm[i]
             a_perp   = A_perp(nperp[i_nperp], p_norm_all[i], p_Te, ksi, X)
+            ksi2_ratio = ksi**2 / (1 - ksi**2 + eps)  # p∥²/p⊥²
             Pol_term = (0.5 * (pol[0] * bessel_integrand(harm-1, a_perp) +
                                pol[1] * bessel_integrand(harm+1, a_perp)) +
-                               pol[2] * bessel_integrand(harm,   a_perp))
+                               ksi2_ratio * pol[2] * bessel_integrand(harm,   a_perp))
 
             D_RF_integrand[i] += weight * Pol_term
 

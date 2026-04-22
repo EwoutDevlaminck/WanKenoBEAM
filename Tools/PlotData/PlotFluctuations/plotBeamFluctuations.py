@@ -175,10 +175,10 @@ def _load_beam_data(filename):
         beam_extent = (Rbins[0], Rbins[-1], Zbins[0], Zbins[-1])
 
     # Convert Wfct to energy density [J/m³].
-    # WKBeam stores action density proportional to [MW]; the factor
-    # 1e6 · 4π / (c [m/s]) converts to Joules in the full toroidal volume,
+    # WKBeam stores action density proportional to [\int dV *MW/cm^2]; the factor
+    # 1e6 · 4π / (c [cm/s]) converts to Joules in the full toroidal volume,
     # and dividing by vol_elem gives J/m³.
-    unit_factor = 1e6 * 4 * np.pi / (c * 1e-2)   # c: cm/s → m/s
+    unit_factor = 1e6 * 4 * np.pi / c   # c: cm/s
     print(f'  Total field energy = {np.sum(Wfct_raw) * unit_factor:.3e} J  '
           f'({filename})')
     Wfct = Wfct_raw * unit_factor / vol_elem[..., np.newaxis]
