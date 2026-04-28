@@ -35,7 +35,7 @@ import CommonModules.physics_constants as PhysConst
 _PSI_FLUCT_CUTOFF = 1.6
 
 # Colour sequence for successive beam overlays (teal palette)
-_BEAM_COLOURS = ['#007480', '#413C3A', '#00A79F']
+_BEAM_COLOURS = [ '#007480','#F39869','#413C3A',  '#00A79F']
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +297,7 @@ def plot_beam_fluct(inputdata):
     rank = 0   # dummy MPI rank, not used in the base model classes
     if idata.scatteringGaussian:
         Fluct    = GaussianModel_base(idata, rank)
-        envelope = lambda Ne, rho, theta: Fluct.scatteringDeltaneOverne(Ne, rho, theta)**2
+        envelope = lambda Ne, rho, theta: Fluct.scatteringDeltaneOverne(Ne, rho, theta)
     else:
         Fluct    = ShaferModel_base(idata, rank)
         envelope = lambda Ne, rho, theta: Fluct.ShapeModel(rho, theta)
@@ -403,7 +403,7 @@ def plot_beam_fluct(inputdata):
         cmap_abs.set_under(alpha=0.)
         peak = np.amax(Absorption_total)
         ab = ax.contourf(RR_b, ZZ_b, Absorption_total,
-                         levels=100, vmin=peak / 20., cmap=cmap_abs, zorder=12)
+                         levels=100, vmin=peak / 50., cmap=cmap_abs, zorder=12)
         cb_abs = plt.colorbar(ab, ax=ax, orientation='vertical', pad=0.1, shrink=0.7)
         cb_abs.set_label(r'$P_\mathrm{abs}\ (\mathrm{MW/m}^3)$',
                          size=10, labelpad=-30, y=1.08, rotation=0)

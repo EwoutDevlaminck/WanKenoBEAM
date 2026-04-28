@@ -131,11 +131,9 @@ def create_dir(directory, subdirs=None):
 def load_ec_params(data_folder):
     """Read an ``ECparams_<shot>_<time>s.mat`` file and return WKBeam-ready params.
 
-    The returned dict can be unpacked directly into
-    :meth:`SimulationSetup.make_raytracing_config` for all launcher-specific
-    parameters.  The shared ``SimulationSetup`` parameters that also come from
-    this file (``InputPower``) are returned separately so they can be passed to
-    the constructor.
+    Always returns a list, one entry per active launcher.  For a single-launcher
+    file this is a one-element list; for multi-launcher files each element
+    corresponds to one launcher in the order they appear in the file.
 
     Parameters
     ----------
@@ -144,30 +142,30 @@ def load_ec_params(data_folder):
 
     Returns
     -------
-    params : dict
-        Keys ready for ``make_raytracing_config``:
-        ``freq``, ``beamwidth1``, ``beamwidth2``,
-        ``curvatureradius1``, ``curvatureradius2``,
-        ``rayStartX``, ``rayStartY``, ``rayStartZ``,
-        ``antennatordeg``, ``antennapoldeg``.
-    InputPower : float
-        Input power in MW (converted from kW stored in the file).
-    launcher_name : str
-        E.g. ``'L4'`` for launcher 4 — use this as ``sim_name`` so that the
-        ray-tracing output filename matches the launcher.
+    list of (params, InputPower, launcher_name) tuples
+        params : dict
+            Keys ready for ``make_raytracing_config``:
+            ``freq``, ``beamwidth1``, ``beamwidth2``,
+            ``curvatureradius1``, ``curvatureradius2``,
+            ``rayStartX``, ``rayStartY``, ``rayStartZ``,
+            ``antennatordeg``, ``antennapoldeg``.
+        InputPower : float
+            Input power in MW (converted from kW stored in the file).
+        launcher_name : str
+            E.g. ``'L4'`` for launcher 4 — use this as ``sim_name`` so that
+            the ray-tracing output filename matches the launcher.
 
     Example
     -------
     ::
 
-        params, InputPower, launcher_name = load_ec_params(data_folder)
-
-        sim = SimulationSetup(
-            sim_dir    = ...,
-            sim_name   = launcher_name,
-            InputPower = InputPower,
-        )
-        sim.make_raytracing_config(sigma=-1., nmbrRays=1000, **params)
+        for ec_params, InputPower, launcher_name in load_ec_params(data_folder):
+            sim = SimulationSetup(
+                sim_dir    = f'{parent_folder}/TCV_{shot}_{time:.2f}_{tag}_{launcher_name}',
+                sim_name   = launcher_name,
+                InputPower = InputPower,
+            )
+            sim.make_raytracing_config(sigma=-1., nmbrRays=1000, **ec_params)
     """
     # Locate the ECparams file
     matches = glob.glob(os.path.join(data_folder, 'ECparams_*.mat'))
@@ -181,40 +179,40 @@ def load_ec_params(data_folder):
     mat = loadmat(matches[0])
     b = mat['beams'][0, 0]   # the top-level struct
 
-    def _scalar(field):
-        return float(b[field].squeeze())
+    def _arr(field):
+        return np.atleast_1d(b[field].squeeze())
 
-    launcher    = int(b['launchers'].squeeze())
-    freq        = _scalar('frequencies')         # GHz
-    beamwidth   = _scalar('beamwidth')           # cm (symmetric beam)
-    curv_rad    = _scalar('curv_rad')            # cm (symmetric beam)
-    antennapoldeg = _scalar('theta')             # injection poloidal angle [deg]
-    antennatordeg = _scalar('phi')               # injection toroidal angle [deg]
-    InputPower_kW = _scalar('inputpower')        # kW → convert to MW
-    cp = b['centerpoint'].squeeze()
-    rayStartX   = float(cp['x'].squeeze())       # cm
-    rayStartY   = float(cp['y'].squeeze())       # cm
-    rayStartZ   = float(cp['z'].squeeze())       # cm
+    launchers_arr = _arr('launchers').astype(int)
+    freqs         = _arr('frequencies')
+    beamwidths    = _arr('beamwidth')
+    curv_rads     = _arr('curv_rad')
+    thetas        = _arr('theta')
+    phis          = _arr('phi')
+    inputpowers   = _arr('inputpower')
+    n_launchers   = len(launchers_arr)
 
-    launcher_name = f'L{launcher}'
-    InputPower_MW = InputPower_kW / 1000.0
+    result = []
+    for i in range(n_launchers):
+        cp            = b['centerpoint'][0, i]
+        launcher_name = f'L{launchers_arr[i]}'
+        InputPower_MW = float(inputpowers[i]) / 1000.0
+        params = dict(
+            freq             = float(freqs[i]),
+            beamwidth1       = float(beamwidths[i]),
+            beamwidth2       = float(beamwidths[i]),
+            curvatureradius1 = float(curv_rads[i]),
+            curvatureradius2 = float(curv_rads[i]),
+            rayStartX        = float(cp['x'].squeeze()),
+            rayStartY        = float(cp['y'].squeeze()),
+            rayStartZ        = float(cp['z'].squeeze()),
+            antennatordeg    = float(phis[i]),
+            antennapoldeg    = float(thetas[i]),
+        )
+        print(f'Loaded ECparams: launcher={launcher_name}, '
+              f'freq={float(freqs[i]):.1f} GHz, InputPower={InputPower_MW:.3f} MW')
+        result.append((params, InputPower_MW, launcher_name))
 
-    params = dict(
-        freq             = freq,
-        beamwidth1       = beamwidth,
-        beamwidth2       = beamwidth,
-        curvatureradius1 = curv_rad,
-        curvatureradius2 = curv_rad,
-        rayStartX        = rayStartX,
-        rayStartY        = rayStartY,
-        rayStartZ        = rayStartZ,
-        antennatordeg    = antennatordeg,
-        antennapoldeg    = antennapoldeg,
-    )
-
-    print(f'Loaded ECparams: launcher={launcher_name}, '
-          f'freq={freq:.1f} GHz, InputPower={InputPower_MW:.3f} MW')
-    return params, InputPower_MW, launcher_name
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +305,15 @@ class SimulationSetup:
         create_dir(self.sim_dir, subdirs)
         return self
 
+    def create_input_dir(self):
+        """Create only the ``input/`` subdirectory.
+
+        Use this instead of :meth:`create_dirs` for WKBeam–LUKE coupled setups
+        where ``output/`` and ``plots/`` are created per-iteration by WKBeam.
+        """
+        create_dir(self.sim_dir, ['input'])
+        return self
+
     def copy_input_files(self, data_folder):
         """Copy equilibrium and profile files from *data_folder* into ``input/``.
 
@@ -376,6 +383,7 @@ class SimulationSetup:
                                 antennatordeg, antennapoldeg,
                                 nmbrRays=1000,
                                 anglespecification='ASDEX',
+                                scattering=False,
                                 vesselfile=None,
                                 **extra):
         """Generate ``RayTracing.txt``.
@@ -391,6 +399,9 @@ class SimulationSetup:
         antennapoldeg : float   Poloidal injection angle in degrees.
         nmbrRays : int          Number of rays to trace.
         anglespecification : str  ``'ASDEX'`` (default) or ``'ITER'``.
+        scattering : bool
+            Whether to include scattering effects.
+
         vesselfile : str, optional
             Absolute path to the ``*_vessel.mat`` file for this shot.
             If omitted, the value already in the standard template is kept.
@@ -414,12 +425,70 @@ class SimulationSetup:
             'antennapoldeg':        antennapoldeg,
             'nmbrRays':             nmbrRays,
             'anglespecification':   anglespecification,
+            'scattering':           scattering,
         }
         if vesselfile is not None:
             overrides['vesselfile'] = vesselfile
         overrides.update(extra)
         print('Generating RayTracing.txt ...')
         make_config(self._std('RayTracing.txt'), self._out('RayTracing.txt'), overrides)
+        return self
+
+    def make_raytracing_template(self,
+                                  freq, sigma,
+                                  beamwidth1, beamwidth2,
+                                  curvatureradius1, curvatureradius2,
+                                  rayStartX, rayStartY, rayStartZ,
+                                  antennatordeg, antennapoldeg,
+                                  nmbrRays=1000,
+                                  anglespecification='ASDEX',
+                                  vesselfile=None,
+                                  **extra):
+        """Generate ``input/RayTracing_template.txt`` for WKBeam–LUKE coupled runs.
+
+        Uses the QLabs standard config (``RayTracing_QLabs.txt``) as the base
+        template.  The ``output_dir``, ``output_filename``, ``qlabs_maxwellian``,
+        and ``qlabs_edf_file`` keys are intentionally left as placeholders —
+        ``wkb_make_configs_ed`` patches them at runtime for each QL iteration.
+
+        Parameters
+        ----------
+        freq : float            Frequency in GHz.
+        sigma : float           Mode index (±1).
+        beamwidth1/2 : float    Beam widths in cm.
+        curvatureradius1/2 : float  Curvature radii in cm.
+        rayStartX/Y/Z : float   Antenna position in cm (lab frame).
+        antennatordeg : float   Toroidal injection angle in degrees.
+        antennapoldeg : float   Poloidal injection angle in degrees.
+        nmbrRays : int          Number of rays to trace.
+        anglespecification : str  ``'ASDEX'`` (default) or ``'ITER'``.
+        vesselfile : str, optional
+            Absolute path to the ``*_vessel.mat`` file for this shot.
+        **extra
+            Any other RayTracing parameter to override.
+        """
+        overrides = {
+            'equilibriumdirectory': self.equil_dir,
+            'freq':                 freq,
+            'sigma':                sigma,
+            'beamwidth1':           beamwidth1,
+            'beamwidth2':           beamwidth2,
+            'curvatureradius1':     curvatureradius1,
+            'curvatureradius2':     curvatureradius2,
+            'rayStartX':            rayStartX,
+            'rayStartY':            rayStartY,
+            'rayStartZ':            rayStartZ,
+            'antennatordeg':        antennatordeg,
+            'antennapoldeg':        antennapoldeg,
+            'nmbrRays':             nmbrRays,
+            'anglespecification':   anglespecification,
+        }
+        if vesselfile is not None:
+            overrides['vesselfile'] = vesselfile
+        overrides.update(extra)
+        dest = os.path.join(self.sim_dir, 'input', 'RayTracing_template.txt')
+        print('Generating input/RayTracing_template.txt ...')
+        make_config(self._std('RayTracing_QLabs.txt'), dest, overrides)
         return self
 
     def make_absorption_config(self,

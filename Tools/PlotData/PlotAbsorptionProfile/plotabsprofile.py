@@ -17,6 +17,10 @@ from scipy.interpolate import interp1d
 from CommonModules.input_data import InputData
 from CommonModules.PlasmaEquilibrium import MagneticSurfaces
 
+_BEAM_COLOURS = [ '#007480','r', '#F39869', '#413C3A',  '#00A79F']
+_BEAM_LINESTYLES = ['-', '--']
+
+
 
 # This read the data from a binned file and return
 # the profile of dP/drho, dV/drho, and dP/dV
@@ -189,7 +193,7 @@ def plot_abs(listofconfigfiles):
     
     # LOOP OVER THE LIST OF CONFIGURATION FILES AND COMPUTE THE PROFILES
     #############################################################################
-    for configfile in listofconfigfiles:
+    for i, configfile in enumerate(listofconfigfiles):
 
         # LOAD INPUT PARAMETERS
         idata = InputData(configfile)
@@ -224,14 +228,17 @@ def plot_abs(listofconfigfiles):
             # Do nothing and continue
             pass
 
+        color = _BEAM_COLOURS[i // 2]
+        linestyle = _BEAM_LINESTYLES[i % 2]
+
         # add deposited power density in rho
-        ax_dP_drho.errorbar(rho, dP_drho[:,0], yerr=dP_drho[:,1], label=label)
+        ax_dP_drho.errorbar(rho, dP_drho[:,0], yerr=dP_drho[:,1], label=label, c=color, linestyle=linestyle)
 
         # add the volume and the power deposition
         ax_dV_drho.plot(rho, dV_drho, c='#007480', label=label)        
 
         # add power deposition profile
-        ax_dP_dV.errorbar(rho, dP_dV[:,0], yerr=dP_dV[:,1], label=label)
+        ax_dP_dV.errorbar(rho, dP_dV[:,0], yerr=dP_dV[:,1], label=label, c=color, linestyle=linestyle)
 
         # if requested add the corresponding TORBEAM result for the
         # power deposition profile
@@ -246,22 +253,28 @@ def plot_abs(listofconfigfiles):
     # COMPLETE FIGURES WITH LABELS, LEGENDS AND GRIDS
     #############################################################################  
     # plot of dP/drho
+    ax_dP_drho.set_xlim(0)
+    ax_dP_drho.set_ylim(0)
     ax_dP_drho.set_xlabel(r'$\rho$',fontsize=20)
     ax_dP_drho.set_ylabel(r'$dP(\rho)/d\rho$ (MW)',fontsize=20)
-    ax_dP_drho.legend()
+    ax_dP_drho.legend(fontsize=15)
     ax_dP_drho.grid()
 
     # plot of dV/drho
+    ax_dV_drho.set_xlim(0)
+    ax_dV_drho.set_ylim(0)
     ax_dV_drho.set_xlabel(r'$\rho$',fontsize=20)
     ax_dV_drho.set_ylabel(r'$dV(\rho) / d\rho$ (m$^3$)',fontsize=20)
-    ax_dV_drho.legend(loc='upper left')
+    ax_dV_drho.legend(loc='upper left', fontsize=15)
     ax_dV_drho.grid()
 
     # plot of dP/dV
+    ax_dP_dV.set_xlim(0)
+    ax_dP_dV.set_ylim(0)
     ax_dP_dV.set_xlabel(r'$\rho$',fontsize=20)
     ax_dP_dV.set_ylabel(r'$dP / dV$ (MW / m$^3$)',fontsize=20)    
     ax_dP_dV.set_title('power deposition profile',fontsize=20)
-    ax_dP_dV.legend()
+    ax_dP_dV.legend(fontsize=15)
     ax_dP_dV.grid()
 
     plt.show()

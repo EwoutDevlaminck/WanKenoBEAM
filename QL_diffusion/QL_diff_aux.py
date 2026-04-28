@@ -63,14 +63,19 @@ def _compute_Edens(Wfct, psi, d_psi, theta, d_theta, Nperp, d_nperp, d_npar, Eq)
         for t, theta_val in enumerate(theta):
             ptV[l, t] = 2*np.pi * 1e-6 * d_psi[l] * d_theta * Eq.volume_element_J(theta_val, psi_val)
 
-    # k-space volume element: dV_N = 2π * Nperp * d_Nperp * d_Npar  (cylindrical in N-space)
-    dV_N = 2 * np.pi * Nperp * d_nperp * d_npar
+    # k-space volume element per phi_N: dV_N = Nperp * d_Nperp * d_Npar  (cylindrical in N-space)
+    dV_N =  Nperp * d_nperp * d_npar
 
     # Normalise: integrate Wfct over real-space volume, then divide by k-space volume
-    # Factor 4π/c * 1e6 converts WKBeam units to J/N^2
-    Edens = Wfct[:, :, :, :, 0] / np.sum(ptV, axis=1)[:, None, None, None]
+    # Factor 1/c[cm/s] * 1e6 converts WKBeam units to J. Then divide by dV_N to get J/N² and by volume to get J/m³/N^2.
+    Edens = Wfct[:, :, :, :, 0] / ptV[:, :, None, None]
     Edens /= dV_N[None, None, None, :]
-    Edens *= 4*np.pi / c * 1e6
+    Edens *= 1e6 / (100*c)
+
+    # Then we still need to divide by lim_V->infty 1/V. For our interpretation, this is actually (dV(psi)/dpsi)^-1
+    dV_dpsi = np.sum(ptV, axis=1) / d_psi
+    dV_dpsi = dV_dpsi[:, None, None, None]  # reshape for broadcasting
+    Edens /= dV_dpsi
     return Edens
 
 
@@ -275,7 +280,7 @@ def D_RF_prefactor(p_norm, ksi0, Ne_ref, Te_ref, omega, eps):
     P_norm, Ksi0 = np.meshgrid(p_norm, ksi0)
     inv_kabsp = 1 /(abs(Ksi0)* P_norm + eps)
     omega_pe = disp.disParamomegaP(Ne_ref)
-
+    # Should be 8*pi^2, remaining factor two yet to be found...
     prefac =  8*np.pi**2 * Gamma * inv_kabsp / (m_e * omega_pe**2 * coulomb_log * Gamma_Te**3)  * (c/omega)
 
     return prefac.T

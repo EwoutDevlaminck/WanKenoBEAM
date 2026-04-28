@@ -86,7 +86,7 @@ def _setup_bins(idata):
                     bins[i] = np.linspace(idata.min[i], idata.max[i], idata.nmbr[i]+1)
                 else:
                     if isinstance(idata.bins[i][0], str):
-                        grids = loadmat(idata.outputdirectory + idata.bins[i][0])['WKBacca_grids']
+                        grids = loadmat(os.path.join(idata.outputdirectory, idata.bins[i][0]))['WKBacca_grids']
                         bins[i] = grids[idata.bins[i][1]][0,0][0]
                     else:
                         bins[i] = idata.bins[i]
