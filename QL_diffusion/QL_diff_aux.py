@@ -67,15 +67,12 @@ def _compute_Edens(Wfct, psi, d_psi, theta, d_theta, Nperp, d_nperp, d_npar, Eq)
     dV_N =  Nperp * d_nperp * d_npar
 
     # Normalise: integrate Wfct over real-space volume, then divide by k-space volume
-    # Factor 1/c[cm/s] * 1e6 converts WKBeam units to J. Then divide by dV_N to get J/N² and by volume to get J/m³/N^2.
+    # Factor 1/c[cm/s] * 1e6 converts WKBeam units to MJ/cm^3.
+    # The binning makes this MJ. Then divide by dV_N to get J/N² and by volume to get J/m³/N^2.
     Edens = Wfct[:, :, :, :, 0] / ptV[:, :, None, None]
     Edens /= dV_N[None, None, None, :]
     Edens *= 1e6 / (100*c)
 
-    # Then we still need to divide by lim_V->infty 1/V. For our interpretation, this is actually (dV(psi)/dpsi)^-1
-    dV_dpsi = np.sum(ptV, axis=1) / d_psi
-    dV_dpsi = dV_dpsi[:, None, None, None]  # reshape for broadcasting
-    Edens /= dV_dpsi
     return Edens
 
 
@@ -226,9 +223,9 @@ def pTe_from_Te(Te):
     """
     Thermal momentum from temperature, normalised to m_e*c
     Te in keV
-    factor e/(m_e*c**2) is precalculated
+    
     """
-    return np.sqrt(1e3 * Te* e_over_me_c2)
+    return np.sqrt(Te / 511)
 
 #@jit(nopython=True)
 def gamma(p, pTe):
@@ -248,14 +245,29 @@ def N_par_resonant(inv_kp, p_Te, Gamma, X, harm):
 
 #@jit(nopython=True)
 def polarisation(N2, K_angle, P, R, L, S):
+    """Return polarisation diagonal terms and signed cross-products.
+
+    All quantities are real for a propagating cold-plasma wave (real N²,
+    real Stix parameters), so e+, e-, e‖ are all real-valued amplitudes.
+
+    Returns
+    -------
+    pol_diag  : (3,) array  [|e+|², |e-|², |e‖|²]  — strictly non-negative
+    pol_cross : (3,) array  [e+·e-, e-·e‖, e+·e‖]  — signed real products
+    """
     PlusOverMinus = (N2 - R)/(N2 - L)
-    ParOverMinus = - (N2 - S)/(N2 - L) * (N2*np.cos(K_angle)*np.sin(K_angle))/(P - N2*np.sin(K_angle)**2)
+    ParOverMinus  = -(N2 - S)/(N2 - L) * (N2*np.cos(K_angle)*np.sin(K_angle))/(P - N2*np.sin(K_angle)**2)
 
-    emin2 = 1/(1 + PlusOverMinus**2 + ParOverMinus**2)
+    emin2  = 1.0 / (1.0 + PlusOverMinus**2 + ParOverMinus**2)
     eplus2 = PlusOverMinus**2 * emin2
-    epar2 = ParOverMinus**2 * emin2
+    epar2  = ParOverMinus**2  * emin2
 
-    return np.array([eplus2, emin2, epar2])
+    # Signed cross-products (real because all amplitudes are real)
+    ep_em  = PlusOverMinus * emin2                       # e+ × e-
+    em_epar = ParOverMinus  * emin2                      # e- × e‖
+    ep_epar = PlusOverMinus * ParOverMinus * emin2       # e+ × e‖
+
+    return np.array([eplus2, emin2, epar2]), np.array([ep_em, em_epar, ep_epar])
 
 #@jit(nopython=True)
 def A_perp(nperp, p_norm, pTe, ksi, X):
@@ -271,25 +283,181 @@ def bessel_integrand(n, x):
 #---Functions for the prefactor of bounce averaged D_RF matrices---#
 #-------------------------------#
 
-def D_RF_prefactor(p_norm, ksi0, Ne_ref, Te_ref, omega, eps):
+def D_RF_prefactor(p_norm, ksi0, Ne_ref, Te_ref, omega, eps, lnc_e_ref=None):
+    """Compute the momentum-pitch prefactor C_RF for the QL diffusion operator.
 
-    p_Te = pTe_from_Te(Te_ref)
+    Parameters
+    ----------
+    Ne_ref     : float  Reference electron density [1e19 m⁻³].
+    Te_ref     : float  Reference electron temperature [keV].
+    lnc_e_ref  : float, optional
+        Coulomb logarithm from LUKE.  When provided it replaces the analytic
+        formula (DKE eq. 6.50) to keep the Python prefactor consistent with
+        the LUKE collision operator.  Units: dimensionless.
+    """
+    p_Te     = pTe_from_Te(Te_ref)
     Gamma_Te = gamma(1, p_Te)
-    coulomb_log = 31.3 - 0.5 * np.log(1e19*Ne_ref) + np.log(1e3*Te_ref) # DKE 6.50 with n_e in 1e19 m⁻3 and T_e in keV
-    Gamma = gamma(p_norm, p_Te)
+    if lnc_e_ref is not None:
+        coulomb_log = lnc_e_ref
+    else:
+        coulomb_log = 31.3 - 0.5 * np.log(1e19*Ne_ref) + np.log(1e3*Te_ref)  # DKE 6.50
+    Gamma    = gamma(p_norm, p_Te)
     P_norm, Ksi0 = np.meshgrid(p_norm, ksi0)
-    inv_kabsp = 1 /(abs(Ksi0)* P_norm + eps)
+    inv_kabsp = 1.0 / (abs(Ksi0) * P_norm + eps)
     omega_pe = disp.disParamomegaP(Ne_ref)
-    # Should be 8*pi^2, remaining factor two yet to be found...
-    prefac =  8*np.pi**2 * Gamma * inv_kabsp / (m_e * omega_pe**2 * coulomb_log * Gamma_Te**3)  * (c/omega)
+    prefac   = 8*np.pi**2 * Gamma * inv_kabsp / (m_e * omega_pe**2 * coulomb_log * Gamma_Te**3) * (c/omega)
 
     return prefac.T
+
+#-------------------------------#
+# Sparse energy-density loader
+#-------------------------------#
+
+def _load_sparse_edens(h5path, psi, d_psi, theta_h, d_theta, npar, d_npar, nperp, d_nperp, Eq):
+    """Read the COO sparse group from a WKBeam HDF5 file and return an energy-density dict.
+
+    The function applies the same unit conversion as _compute_Edens so that
+    the returned values are in J m⁻³ and can be passed directly to D_RF_nobounce.
+
+    Parameters
+    ----------
+    h5path          : str   Path to the binned HDF5 file.
+    psi, d_psi      : arrays  Radial half-grid and bin widths [a.u.].
+    theta_h, d_theta: arrays  Poloidal half-grid and bin widths [rad].
+    npar, d_npar    : array, float  Npar half-grid and bin width.
+    nperp, d_nperp  : array, float  Nperp half-grid and bin width.
+    Eq              : Equilibrium  WKBeam equilibrium object.
+
+    Returns
+    -------
+    edens_sparse : dict
+        Nested dict ``{l: {t_idx: {i_npar: {i_nperp: (W, u1_re, u2_re)}}}}``.
+        ``W`` is the energy density in J m⁻³.  ``u1_re`` / ``u2_re`` are the
+        cos(φ_N) / cos(2φ_N) Fourier moments with the same J m⁻³ pre-factor.
+    """
+    factor = 1e6 / (100.0 * c)   # same as _compute_Edens
+
+    # Precompute dV_N[i_nperp] = nperp * d_nperp * d_npar
+    dV_N = nperp * d_nperp * d_npar
+
+    # Precompute ptV[l, t] = 2π × 1e-6 × d_psi[l] × d_theta[t] × J(theta, psi)
+    # d_theta is a 1-D array (bin widths); Jacobian evaluated at each (psi, theta) centre.
+    ptV = np.zeros((len(psi), len(theta_h)))
+    for l, psi_l in enumerate(psi):
+        for t, theta_l in enumerate(theta_h):
+            dt = d_theta[t] if hasattr(d_theta, '__len__') else d_theta
+            ptV[l, t] = 2.0*np.pi * 1e-6 * d_psi[l] * dt * Eq.volume_element_J(theta_l, psi_l)
+
+    edens_sparse = {}
+
+    with h5py.File(h5path, 'r') as fid:
+        if 'sparse' not in fid:
+            raise KeyError(f"No 'sparse' group found in {h5path}. "
+                           "Re-run binning with idata.sparse_output = True.")
+        grp = fid['sparse']
+        shape   = grp['shape'][()]                       # [n_psi, n_theta, n_npar, n_nperp]
+        indices = grp['indices'][()]                     # (4, nnz) int32
+        BT      = grp['values_BinnedTraces'][()]         # (nnz,) float
+        has_u1  = 'values_cos_phiN'  in grp
+        has_u2  = 'values_cos2_phiN' in grp
+        u1_arr  = grp['values_cos_phiN'][()]  if has_u1 else np.zeros_like(BT)
+        u2_arr  = grp['values_cos2_phiN'][()] if has_u2 else np.zeros_like(BT)
+
+    i_psi_arr, i_theta_arr, i_npar_arr, i_nperp_arr = indices
+
+    for k in range(len(BT)):
+        l   = int(i_psi_arr[k])
+        t   = int(i_theta_arr[k])
+        inp = int(i_npar_arr[k])
+        inpp= int(i_nperp_arr[k])
+
+        denom = ptV[l, t] * dV_N[inpp]
+        if denom == 0.0:
+            continue
+        conv = factor / denom
+
+        W     = float(BT[k])    * conv
+        u1_re = float(u1_arr[k]) * conv
+        u2_re = float(u2_arr[k]) * conv
+
+        edens_sparse.setdefault(l, {})
+        edens_sparse[l].setdefault(t, {})
+        edens_sparse[l][t].setdefault(inp, {})
+        edens_sparse[l][t][inp][inpp] = (W, u1_re, u2_re)
+
+    return edens_sparse
+
+
+def _interpolate_sparse_slice(theta_val, sparse_l, theta_h):
+    """Return a linearly interpolated sparse (i_npar -> i_nperp -> (W,u1,u2)) slice.
+
+    Finds the one or two occupied theta bins in ``sparse_l`` that bracket
+    ``theta_val`` and linearly interpolates.  If only one side is occupied,
+    uses that value unchanged (nearest-neighbour at the edge).
+
+    Parameters
+    ----------
+    theta_val : float        Target theta value [rad].
+    sparse_l  : dict         ``edens_sparse[l]`` for a single psi surface.
+    theta_h   : 1-D array    Theta bin centres corresponding to the integer keys.
+
+    Returns
+    -------
+    result : dict  {i_npar: {i_nperp: (W, u1_re, u2_re)}}  — may be empty.
+    """
+    occupied = sorted(sparse_l.keys())
+    if not occupied:
+        return {}
+
+    occ_vals = theta_h[occupied]
+    idx = int(np.searchsorted(occ_vals, theta_val))
+
+    if idx == 0:
+        return sparse_l[occupied[0]]
+    if idx >= len(occupied):
+        return sparse_l[occupied[-1]]
+
+    i0, i1 = occupied[idx-1], occupied[idx]
+    t0, t1 = occ_vals[idx-1], occ_vals[idx]
+    alpha = float((theta_val - t0) / (t1 - t0))
+
+    all_npar = set(sparse_l[i0]) | set(sparse_l[i1])
+    result = {}
+    for inp in all_npar:
+        sub0 = sparse_l[i0].get(inp, {})
+        sub1 = sparse_l[i1].get(inp, {})
+        all_nperp = set(sub0) | set(sub1)
+        sub_interp = {}
+        for inpp in all_nperp:
+            v0 = sub0.get(inpp, (0.0, 0.0, 0.0))
+            v1 = sub1.get(inpp, (0.0, 0.0, 0.0))
+            sub_interp[inpp] = (
+                (1.0-alpha)*v0[0] + alpha*v1[0],
+                (1.0-alpha)*v0[1] + alpha*v1[1],
+                (1.0-alpha)*v0[2] + alpha*v1[2],
+            )
+        result[inp] = sub_interp
+    return result
+
+
+def _dense_to_sparse_slice(Wfct_2d):
+    """Convert a dense [n_npar, n_nperp] Wfct slice to a sparse-dict slice.
+
+    Used only by the backward-compatible dense path in D_RF.  Fourier moments
+    u1_re / u2_re are set to zero (dense format carries no φ_N information).
+    """
+    result = {}
+    rows, cols = np.where(Wfct_2d > 0)
+    for inp, inpp in zip(rows.tolist(), cols.tolist()):
+        result.setdefault(inp, {})[inpp] = (float(Wfct_2d[inp, inpp]), 0.0, 0.0)
+    return result
+
 
 #-------------------------------#
 #---Function for the calculation of D_RF(psi, theta, p, ksi)---#
 #----------------------------
 
-def D_RF_nobounce(p_norm_w, ksi, npar, nperp, Wfct, Te, P, X, R, L, S, harm, eps,
+def D_RF_nobounce(p_norm_w, ksi, npar, nperp, sparse_slice, Te, P, X, R, L, S, harm, eps,
                   npar_tree, d_npar, d_nperp, p_norm_h=None):
     """Calculate the un-bounce-averaged D_RF integrand on the momentum grid(s).
 
@@ -301,24 +469,35 @@ def D_RF_nobounce(p_norm_w, ksi, npar, nperp, Wfct, Te, P, X, R, L, S, harm, eps
 
     Parameters
     ----------
-    p_norm_w    : 1-D array   Momentum whole-grid (always required).
-    ksi         : float       Local pitch-angle cosine at this theta point.
-    npar, nperp : 1-D arrays  Parallel / perpendicular refractive-index grids.
-    Wfct        : 2-D array   Energy density slice [npar, nperp] at this (psi, theta).
-    Te          : float       Electron temperature [keV] — used for thermal momentum.
-    P, X, R, L, S : float    Stix parameters at this (psi, theta) point.
-    harm        : int         Cyclotron harmonic number.
-    eps         : float       Small regularisation offset (avoids division by zero).
-    npar_tree   : KDTree      Pre-built spatial index over the Npar grid.
-    d_npar      : float       Uniform Npar bin width.
-    d_nperp     : float       Uniform Nperp bin width.
-    p_norm_h    : 1-D array, optional
+    p_norm_w     : 1-D array   Momentum whole-grid (always required).
+    ksi          : float       Local pitch-angle cosine at this theta point.
+    npar, nperp  : 1-D arrays  Parallel / perpendicular refractive-index grids.
+    sparse_slice : dict        {i_npar: {i_nperp: (W, u1_re, u2_re)}} energy
+                               density slice at this (psi, theta).  W in J m⁻³;
+                               u1_re = W × <cos φ_N>, u2_re = W × <cos 2φ_N>.
+    Te           : float       Electron temperature [keV] — used for thermal momentum.
+    P, X, R, L, S : float     Stix parameters at this (psi, theta) point.
+    harm         : int         Cyclotron harmonic number.
+    eps          : float       Small regularisation offset (avoids division by zero).
+    npar_tree    : KDTree      Pre-built spatial index over the Npar grid.
+    d_npar       : float       Uniform Npar bin width.
+    d_nperp      : float       Uniform Nperp bin width.
+    p_norm_h     : 1-D array, optional
         Momentum half-grid.  When supplied, both grids are processed together
         and the function returns a tuple ``(result_w, result_h)``.  When
         omitted, only ``p_norm_w`` is processed and a single array is returned.
+
+    Notes on polarisation
+    ---------------------
+    The full Fourier-averaged power weight per cell is:
+
+        w̃ = W·T₀ + 2·C₂·u2_re + 2·C₁·u1_re
+
+    where T₀ collects the diagonal (φ_N-independent) polarisation terms and
+    C₁, C₂ are the Fourier cross-coupling coefficients.  All quantities are
+    real for a cold-plasma propagating wave.
     """
     dist_bound = d_npar / 2          # half-bin tolerance for resonance matching
-    prefac     = 1.0 / (2 * dist_bound)   # uniform weight replacing the Npar integral
     p_Te       = pTe_from_Te(Te)     # thermal momentum normalised to m_e*c
 
     # Concatenate both p grids so the resonance search is done in a single pass.
@@ -328,6 +507,12 @@ def D_RF_nobounce(p_norm_w, ksi, npar, nperp, Wfct, Te, P, X, R, L, S, harm, eps
     else:
         p_norm_all = p_norm_w
     n_w = len(p_norm_w)
+
+    if not sparse_slice:
+        # Empty slice — no beam energy at this (psi, theta)
+        if p_norm_h is not None:
+            return np.zeros(n_w), np.zeros(len(p_norm_h))
+        return np.zeros(n_w)
 
     # --- Resonance condition: for each p, find which Npar bin it resonates with ---
     inv_kp          = 1.0 / (ksi * p_norm_all + eps)
@@ -346,38 +531,51 @@ def D_RF_nobounce(p_norm_w, ksi, npar, nperp, Wfct, Te, P, X, R, L, S, harm, eps
 
     D_RF_integrand = np.zeros(len(p_norm_all))
 
-    # Cache polarisation terms per (i_npar, i_nperp): polarisation depends only
-    # on the local geometry (N², wave angle, Stix params) — not on p_norm.
-    # This avoids recomputing it for every resonant p value that hits the same cell.
+    # Cache geometry-only (pol_diag, pol_cross, nperp_weight) per (i_npar, i_nperp).
+    # Polarisation depends only on N², wave angle, and Stix params — not on p_norm.
     pol_cache = {}
 
+    ksi2_ratio     = ksi**2 / (1.0 - ksi**2 + eps)          # (k‖/k⊥)² factor
+    ksi_perp_ratio = ksi / np.sqrt(1.0 - ksi**2 + eps)       # k‖/k⊥  (without 1/√2)
+
     for i, m in zip(i_res, n_par_res):
-        i_npar    = res_condition_N_par[i, m]
-        beam_cols = np.where(Wfct[i_npar, :] > 0)[0]
-        if beam_cols.size == 0:
+        i_npar = res_condition_N_par[i, m]
+        if i_npar not in sparse_slice:
             continue
 
-        for i_nperp in beam_cols:
-            # Look up or compute the geometry-only part of the integrand weight
+        for i_nperp, (W_val, u1_re_val, u2_re_val) in sparse_slice[i_npar].items():
+            if W_val <= 0.0:
+                continue
+
+            # Look up or compute geometry-only cache entry
             key = (i_npar, i_nperp)
             if key not in pol_cache:
                 N2      = nperp[i_nperp]**2 + npar[i_npar]**2
                 K_angle = np.arctan2(nperp[i_nperp], npar[i_npar])
-                pol     = polarisation(N2, K_angle, P, R, L, S)
-                # Pre-multiply the geometry and Wfct weight (independent of p_norm)
-                pol_cache[key] = (pol,
-                                  d_nperp * prefac * d_npar * nperp[i_nperp] * Wfct[i_npar, i_nperp])
+                pol_diag, pol_cross = polarisation(N2, K_angle, P, R, L, S)
+                nperp_weight        = d_nperp * nperp[i_nperp]
+                pol_cache[key]      = (pol_diag, pol_cross, nperp_weight)
 
-            pol, weight = pol_cache[key]
+            pol_diag, pol_cross, nperp_weight = pol_cache[key]
 
-            # Bessel argument and polarisation term depend on p_norm[i]
-            a_perp   = A_perp(nperp[i_nperp], p_norm_all[i], p_Te, ksi, X)
-            ksi2_ratio = ksi**2 / (1 - ksi**2 + eps)  # p∥²/p⊥²
-            Pol_term = (0.5 * (pol[0] * bessel_integrand(harm-1, a_perp) +
-                               pol[1] * bessel_integrand(harm+1, a_perp)) +
-                               ksi2_ratio * pol[2] * bessel_integrand(harm,   a_perp))
+            # Bessel argument (depends on p_norm[i])
+            a_perp = A_perp(nperp[i_nperp], p_norm_all[i], p_Te, ksi, X)
+            Jm1    = sp.jn(harm-1, a_perp)
+            Jp1    = sp.jn(harm+1, a_perp)
+            Jn     = sp.jn(harm,   a_perp)
 
-            D_RF_integrand[i] += weight * Pol_term
+            # Diagonal polarisation term (φ_N-independent)
+            T0 = (0.5*(pol_diag[0]*Jm1**2 + pol_diag[1]*Jp1**2)
+                  + ksi2_ratio * pol_diag[2] * Jn**2)
+
+            # φ_N Fourier cross-coupling coefficients
+            # C2 enters with cos(2φ_N) → u2_re;  C1 with cos(φ_N) → u1_re
+            C2 = 0.5 * pol_cross[0] * Jm1 * Jp1
+            C1 = (ksi_perp_ratio / np.sqrt(2.0)
+                  * (pol_cross[2]*Jm1*Jn + pol_cross[1]*Jp1*Jn))
+
+            Pol_term = W_val*T0 + 2.0*C2*u2_re_val + 2.0*C1*u1_re_val
+            D_RF_integrand[i] += nperp_weight * Pol_term
 
     if p_norm_h is not None:
         return D_RF_integrand[:n_w], D_RF_integrand[n_w:]
@@ -401,7 +599,7 @@ def bounce_sum(d_theta_grid_j, CB_j, Func, passing, sigma_dep=False):
 #---THIS IS THE MAIN FUNCTION---#
 #-------------------------------#
 
-def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, Eq, Ne_ref, Te_ref, n=[2, 3], FreqGHz=82.7, DKE_calc=False, gaussian_smooth=False, gaussian_sigma=2, symmetrise_trapped=True, eps=np.finfo(np.float32).eps):
+def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, Eq, Ne_ref, Te_ref, n=[2, 3], FreqGHz=82.7, DKE_calc=False, gaussian_smooth=False, gaussian_sigma=2, symmetrise_trapped=True, eps=np.finfo(np.float32).eps, edens_sparse=None, lnc_e_ref=None):
 
     """
     The main function to calculate the RF diffusion coefficients.
@@ -455,23 +653,33 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
     #---------------------------------#
 
     omega = phys.AngularFrequency(FreqGHz)
-    
+
+    use_sparse = edens_sparse is not None
+
     # Precaution to not have exactly 0 values in the grid for ksi, as this would be
     # infintely trapped particles
     # Hopefully will not be needed in final implementation, if LUKE grids are ok.
     ksi0_h[abs(ksi0_h)<1e-4] = 1e-4
     ksi0_w[abs(ksi0_w)<1e-4] = 1e-4
 
-    
+
     # For theta. Psi is a half grid already, theta is a full grid
 
     d_theta = np.diff(theta_w)
     theta_h = theta_w[:-1] + d_theta/2
 
-    # Precalculate quantities in configuration space
-    # Careful, these are only to be used for passing particles, that keep the full theta grid!
+    # Precalculate quantities in configuration space (binned theta grid).
+    # Used for passing-particle B values (to index into the same bins as the Edens),
+    # Stix parameters, and global geometry.
     Rp, Zp = Eq.magn_axis_coord_Rz /100 #m
     ptR, ptZ, ptBt, ptBR, ptBz, ptB, ptNe, ptTe, P, X, R, L, S = config_quantities(psi, theta_h, omega, Eq)
+
+    if use_sparse:
+        # Dedicated fine geometry grid (360 pts) for accurate trapping-boundary detection.
+        # This grid is independent of the binning resolution and is never used for Edens.
+        theta_trap = np.linspace(-np.pi, np.pi, 361)[:-1]
+        ptR_tr, ptZ_tr, _, ptBR_tr, ptBz_tr, ptB_tr, _, _, _, _, _, _, _ = \
+            config_quantities(psi, theta_trap, omega, Eq)
 
     # --- Quantities that are constant across all psi and ksi values ---
 
@@ -483,9 +691,9 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
     # Normalisation prefactors for the three staggered grids.
     # These depend only on Ne_ref, Te_ref, omega (all constants), so they are
     # computed once here rather than inside the psi loop.
-    C_RF_wh = D_RF_prefactor(p_norm_w, ksi0_h, Ne_ref, Te_ref, omega, eps)
-    C_RF_hw = D_RF_prefactor(p_norm_h, ksi0_w, Ne_ref, Te_ref, omega, eps)
-    C_RF_hh = D_RF_prefactor(p_norm_h, ksi0_h, Ne_ref, Te_ref, omega, eps)
+    C_RF_wh = D_RF_prefactor(p_norm_w, ksi0_h, Ne_ref, Te_ref, omega, eps, lnc_e_ref)
+    C_RF_hw = D_RF_prefactor(p_norm_h, ksi0_w, Ne_ref, Te_ref, omega, eps, lnc_e_ref)
+    C_RF_hh = D_RF_prefactor(p_norm_h, ksi0_h, Ne_ref, Te_ref, omega, eps, lnc_e_ref)
 
     #--------------------------------#
     #---Initialision of grids---#
@@ -526,37 +734,56 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
         # The calculation is split completely into the psi grid,
         # as the calculation is independent for every psi value
 
-        # B-field interpolant used by Trapping_boundary (needs extrapolation for safety)
-        ptB_Int_at_psi = interp1d(theta_h, ptB[l, :], fill_value=np.amax(ptB[l, :]), bounds_error=False)
+        if use_sparse:
+            # --- Sparse path: use the fine theta_trap grid for trapping detection ---
+            ptB_Int_at_psi = interp1d(theta_trap, ptB_tr[l, :],
+                                      fill_value=np.amax(ptB_tr[l, :]), bounds_error=False)
+            B0_psi, Bmax_psi = minmaxB(ptB_Int_at_psi, theta_trap)
 
-        # B_min and B_max from the ptB interpolant — must be self-consistent
-        # with B_at_psi values used later in ksi_vals = sqrt(1 - B/B0*(1-ksi0²)).
-        # Eq.BminInt/BmaxInt use a different theta grid and can give B0 lower
-        # than min(ptB), which would make B_ratio > 1 everywhere and cause NaN.
-        B0_psi, Bmax_psi = minmaxB(ptB_Int_at_psi, theta_h)
+            _, Trapksi0_w[l], theta_T_w[l] = Trapping_boundary(ksi0_w, ptB_Int_at_psi, theta_trap,
+                                                                 B0_in=B0_psi, Bmax_in=Bmax_psi)
+            _, Trapksi0_h[l], theta_T_h[l] = Trapping_boundary(ksi0_h, ptB_Int_at_psi, theta_trap,
+                                                                 B0_in=B0_psi, Bmax_in=Bmax_psi)
 
-        _, Trapksi0_w[l], theta_T_w[l] = Trapping_boundary(ksi0_w, ptB_Int_at_psi, theta_h,
-                                                             B0_in=B0_psi, Bmax_in=Bmax_psi)
-        _, Trapksi0_h[l], theta_T_h[l] = Trapping_boundary(ksi0_h, ptB_Int_at_psi, theta_h,
-                                                             B0_in=B0_psi, Bmax_in=Bmax_psi)
+            # Fine-grid geometry interpolants for trapped-particle orbits
+            ptB_interp  = interp1d(theta_trap, ptB_tr[l, :])
+            ptBR_interp = interp1d(theta_trap, ptBR_tr[l, :])
+            ptBz_interp = interp1d(theta_trap, ptBz_tr[l, :])
+            ptR_interp  = interp1d(theta_trap, ptR_tr[l, :])
+            ptZ_interp  = interp1d(theta_trap, ptZ_tr[l, :])
 
-        # Per-field interpolants over theta_h, built once per psi.
-        # Trapped-particle branches need to evaluate these on a shifted theta grid;
-        # building them here avoids reconstructing interp1d inside the ksi loop.
-        ptB_interp  = interp1d(theta_h, ptB[l, :])
-        ptBR_interp = interp1d(theta_h, ptBR[l, :])
-        ptBz_interp = interp1d(theta_h, ptBz[l, :])
-        ptR_interp  = interp1d(theta_h, ptR[l, :])
-        ptZ_interp  = interp1d(theta_h, ptZ[l, :])
+            # Set of theta bin indices with nonzero beam energy at this psi
+            sparse_l = edens_sparse.get(l, {})
+            occupied_theta_set = set(sparse_l.keys())
+        else:
+            # --- Dense path: use the binned theta_h grid for trapping detection ---
+            # B-field interpolant used by Trapping_boundary (needs extrapolation for safety)
+            ptB_Int_at_psi = interp1d(theta_h, ptB[l, :], fill_value=np.amax(ptB[l, :]), bounds_error=False)
+
+            # B_min and B_max from the ptB interpolant — must be self-consistent
+            # with B_at_psi values used later in ksi_vals = sqrt(1 - B/B0*(1-ksi0²)).
+            B0_psi, Bmax_psi = minmaxB(ptB_Int_at_psi, theta_h)
+
+            _, Trapksi0_w[l], theta_T_w[l] = Trapping_boundary(ksi0_w, ptB_Int_at_psi, theta_h,
+                                                                 B0_in=B0_psi, Bmax_in=Bmax_psi)
+            _, Trapksi0_h[l], theta_T_h[l] = Trapping_boundary(ksi0_h, ptB_Int_at_psi, theta_h,
+                                                                 B0_in=B0_psi, Bmax_in=Bmax_psi)
+
+            # Per-field interpolants over theta_h, built once per psi.
+            ptB_interp  = interp1d(theta_h, ptB[l, :])
+            ptBR_interp = interp1d(theta_h, ptBR[l, :])
+            ptBz_interp = interp1d(theta_h, ptBz[l, :])
+            ptR_interp  = interp1d(theta_h, ptR[l, :])
+            ptZ_interp  = interp1d(theta_h, ptZ[l, :])
 
         #--------------------------------#
         #---Bounce averaging calculation-#
         #--------------------------------#
 
-        # Wfct slice for this psi value, and its 3-D interpolant (theta, npar, nperp).
-        # The interpolant is used by trapped particles that require a shifted theta grid.
-        Edens_at_psi     = Edens[l, :, :, :]
-        Edens_Int_at_psi = RegularGridInterpolator((theta_h, npar, nperp), Edens_at_psi, bounds_error=False, fill_value=None)
+        if not use_sparse:
+            # Dense path: Wfct slice and 3-D interpolant for trapped particles.
+            Edens_at_psi     = Edens[l, :, :, :]
+            Edens_Int_at_psi = RegularGridInterpolator((theta_h, npar, nperp), Edens_at_psi, bounds_error=False, fill_value=None)
 
 
         #--------------------------------#
@@ -610,19 +837,21 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
                 D_rf_lj_wh = np.zeros((len(theta_h), len(p_norm_w), len(n)))
                 D_rf_lj_hh = np.zeros((len(theta_h), len(p_norm_h), len(n)))
 
-                Edens_lj_h = Edens_at_psi   # passing particles use the full theta grid
-
                 for n_idx, harm in enumerate(n):
                     for t, theta_val in enumerate(theta_grid_j_h):
-                        if Edens_lj_h[t].max() > 0:  # skip theta slices where no beam is present
-                            D_rf_lj_wh[t, :, n_idx], D_rf_lj_hh[t, :, n_idx] = \
-                                D_RF_nobounce(p_norm_w, ksi_vals[t], npar, nperp,
-                                    Edens_lj_h[t, :, :], Te_ref,
-                                    P[l, 0], X[l, t], R[l, t], L[l, t], S[l, t], harm, eps,
-                                    npar_tree, d_npar, d_nperp, p_norm_h=p_norm_h)
+                        if use_sparse:
+                            has_beam = t in occupied_theta_set
+                            slice_t  = sparse_l.get(t, {}) if has_beam else {}
                         else:
-                            D_rf_lj_wh[t, :, n_idx] = np.zeros_like(p_norm_w)
-                            D_rf_lj_hh[t, :, n_idx] = np.zeros_like(p_norm_h)
+                            has_beam = Edens_at_psi[t].max() > 0
+                            slice_t  = _dense_to_sparse_slice(Edens_at_psi[t]) if has_beam else {}
+                        if not has_beam:
+                            continue
+                        D_rf_lj_wh[t, :, n_idx], D_rf_lj_hh[t, :, n_idx] = \
+                            D_RF_nobounce(p_norm_w, ksi_vals[t], npar, nperp,
+                                slice_t, Te_ref,
+                                P[l, 0], X[l, t], R[l, t], L[l, t], S[l, t], harm, eps,
+                                npar_tree, d_npar, d_nperp, p_norm_h=p_norm_h)
             
                     # Vectorised bounce integrals over the full p dimension at once.
                     # w_base[t] = d_theta[t] / (2π) * CB[t] — the theta-quadrature weight.
@@ -653,32 +882,34 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
             else:
                 # Trapped!
                 passing = False
-                
-
-                # In this case, we have to shift to a different theta grid
 
                 # The theta roots are the boundaries of the region where the particles are trapped
                 theta_T_m, theta_T_M = theta_T_h[l, j]
-                theta_w_aux= theta_w[(theta_w >= theta_T_m) & (theta_w <= theta_T_M)]
-                # Add the boundaries to the whole grid
-                theta_w_aux = np.concatenate(([theta_T_m], theta_w_aux, [theta_T_M]))
 
-                d_theta_grid_j_h = np.diff(theta_w_aux) # The grid is now the full grid, so we can just take the dif
+                if use_sparse:
+                    # Build the trapped theta sub-grid from the fine theta_trap grid.
+                    # This ensures accurate bounce integration regardless of binning resolution.
+                    theta_trap_clip = theta_trap[(theta_trap >= theta_T_m) & (theta_trap <= theta_T_M)]
+                    theta_w_aux = np.concatenate(([theta_T_m], theta_trap_clip, [theta_T_M]))
+                else:
+                    theta_w_aux = theta_w[(theta_w >= theta_T_m) & (theta_w <= theta_T_M)]
+                    theta_w_aux = np.concatenate(([theta_T_m], theta_w_aux, [theta_T_M]))
 
-                #Update: Try to follow DKEp134 on the numerical integration, we need the half grid!
-                # Otherwise we inevitably run into issues where B_ratio_h*(1-ksi_val**2) > 1
+                d_theta_grid_j_h = np.diff(theta_w_aux)
+                theta_grid_j_h   = theta_w_aux[:-1] + d_theta_grid_j_h/2
 
-                theta_grid_j_h = theta_w_aux[:-1] + d_theta_grid_j_h/2
-
-                if theta_grid_j_h[-1] > theta_h[-1]:
-                    theta_grid_j_h[-1] = theta_h[-1]
-                if theta_grid_j_h[0] < theta_h[0]:
-                    theta_grid_j_h[0] = theta_h[0]
+                theta_ref_lo = theta_h[0]  if not use_sparse else theta_trap[0]
+                theta_ref_hi = theta_h[-1] if not use_sparse else theta_trap[-1]
+                if theta_grid_j_h[-1] > theta_ref_hi:
+                    theta_grid_j_h[-1] = theta_ref_hi
+                if theta_grid_j_h[0]  < theta_ref_lo:
+                    theta_grid_j_h[0]  = theta_ref_lo
 
                 # From here, most is the same as the passing case, but fields and
                 # Edens must be interpolated onto the restricted theta grid.
 
                 # Use the per-psi interpolants built before the ksi loop
+                # (fine-trap interpolants for sparse, coarse binned interpolants for dense)
                 B_at_psi_j_h      = ptB_interp(theta_grid_j_h)
                 BR_at_psi_j_h     = ptBR_interp(theta_grid_j_h)
                 Bz_at_psi_j_h     = ptBz_interp(theta_grid_j_h)
@@ -703,10 +934,11 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
                 # Bounce integrand for DRF0 (DKE terms not computed for trapped particles)
                 DRF0_integrand = ksi0_over_ksi_j_h**2 * B_ratio_h
 
-                # Interpolate Edens onto the restricted theta grid in one vectorised call
-                Theta_grid_j_h, Npar_grid_j_h, Nperp_grid_j_h = np.meshgrid(
-                    theta_grid_j_h, npar, nperp, indexing='ij')
-                Edens_interp_lj_h = Edens_Int_at_psi((Theta_grid_j_h, Npar_grid_j_h, Nperp_grid_j_h))
+                if not use_sparse:
+                    # Dense path: interpolate Edens onto the restricted theta grid
+                    Theta_grid_j_h, Npar_grid_j_h, Nperp_grid_j_h = np.meshgrid(
+                        theta_grid_j_h, npar, nperp, indexing='ij')
+                    Edens_interp_lj_h = Edens_Int_at_psi((Theta_grid_j_h, Npar_grid_j_h, Nperp_grid_j_h))
 
                 # D_RF_nobounce called once per theta with both p grids merged
                 D_rf_lj_wh = np.zeros((len(theta_grid_j_h), len(p_norm_w), len(n)))
@@ -714,15 +946,19 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
 
                 for n_idx, harm in enumerate(n):
                     for t, theta_val in enumerate(theta_grid_j_h):
-                        if Edens_interp_lj_h[t].max() > 0:
-                            D_rf_lj_wh[t, :, n_idx], D_rf_lj_hh[t, :, n_idx] = \
-                                D_RF_nobounce(p_norm_w, ksi_vals[t], npar, nperp,
-                                    Edens_interp_lj_h[t, :, :], Te_ref,
-                                    P[l, 0], X_h[0, t], R_h[0, t], L_h[0, t], S_h[0, t], harm, eps,
-                                    npar_tree, d_npar, d_nperp, p_norm_h=p_norm_h)
+                        if use_sparse:
+                            slice_t = _interpolate_sparse_slice(theta_val, sparse_l, theta_h)
+                            if not slice_t:
+                                continue
                         else:
-                            D_rf_lj_wh[t, :, n_idx] = np.zeros_like(p_norm_w)
-                            D_rf_lj_hh[t, :, n_idx] = np.zeros_like(p_norm_h)
+                            if Edens_interp_lj_h[t].max() <= 0:
+                                continue
+                            slice_t = _dense_to_sparse_slice(Edens_interp_lj_h[t])
+                        D_rf_lj_wh[t, :, n_idx], D_rf_lj_hh[t, :, n_idx] = \
+                            D_RF_nobounce(p_norm_w, ksi_vals[t], npar, nperp,
+                                slice_t, Te_ref,
+                                P[l, 0], X_h[0, t], R_h[0, t], L_h[0, t], S_h[0, t], harm, eps,
+                                npar_tree, d_npar, d_nperp, p_norm_h=p_norm_h)
                         
                     # Vectorised bounce integrals over p (same pattern as passing case)
                     w_base = d_theta_grid_j_h / (2 * np.pi) * CB_j_h   # shape [t]
@@ -787,18 +1023,21 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
 
                 D_rf_lj_hw = np.zeros((len(theta_h), len(p_norm_h), len(n)))
 
-                Edens_lj_w = Edens_at_psi   # passing particles use the full theta grid
-
                 for n_idx, harm in enumerate(n):
                     for t, theta_val in enumerate(theta_grid_j_w):
-                        if Edens_lj_w[t].max() > 0:
-                            D_rf_lj_hw[t, :, n_idx] = \
-                                D_RF_nobounce(p_norm_h, ksi_vals[t], npar, nperp,
-                                    Edens_lj_w[t, :, :], Te_ref,
-                                    P[l, 0], X[l, t], R[l, t], L[l, t], S[l, t], harm, eps,
-                                    npar_tree, d_npar, d_nperp)
+                        if use_sparse:
+                            has_beam = t in occupied_theta_set
+                            slice_t  = sparse_l.get(t, {}) if has_beam else {}
                         else:
-                            D_rf_lj_hw[t, :, n_idx] = np.zeros_like(p_norm_h)
+                            has_beam = Edens_at_psi[t].max() > 0
+                            slice_t  = _dense_to_sparse_slice(Edens_at_psi[t]) if has_beam else {}
+                        if not has_beam:
+                            continue
+                        D_rf_lj_hw[t, :, n_idx] = \
+                            D_RF_nobounce(p_norm_h, ksi_vals[t], npar, nperp,
+                                slice_t, Te_ref,
+                                P[l, 0], X[l, t], R[l, t], L[l, t], S[l, t], harm, eps,
+                                npar_tree, d_npar, d_nperp)
 
                     # Vectorised bounce integrals over p
                     w_base = d_theta_grid_j_w / (2 * np.pi) * CB_j_w   # shape [t]
@@ -821,27 +1060,26 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
             else:
                 # Trapped!
                 passing = False
-                
-                # In this case, we have to shift to a different theta grid
 
                 # The theta roots are the boundaries of the region where the particles are trapped
                 theta_T_m, theta_T_M = theta_T_w[l, j]
-                theta_w_aux= theta_w[(theta_w >= theta_T_m) & (theta_w <= theta_T_M)]
-                # Add the boundaries to the grid
-                theta_w_aux = np.concatenate(([theta_T_m], theta_w_aux, [theta_T_M]))
 
+                if use_sparse:
+                    theta_trap_clip = theta_trap[(theta_trap >= theta_T_m) & (theta_trap <= theta_T_M)]
+                    theta_w_aux = np.concatenate(([theta_T_m], theta_trap_clip, [theta_T_M]))
+                else:
+                    theta_w_aux = theta_w[(theta_w >= theta_T_m) & (theta_w <= theta_T_M)]
+                    theta_w_aux = np.concatenate(([theta_T_m], theta_w_aux, [theta_T_M]))
 
-                d_theta_grid_j_w = np.diff(theta_w_aux) # The grid is now the full grid, so we can just take the dif
+                d_theta_grid_j_w = np.diff(theta_w_aux)
+                theta_grid_j_w   = theta_w_aux[:-1] + d_theta_grid_j_w/2
 
-                #Update: Try to follow DKEp134 on the numerical integration, we need the half grid!
-                # Otherwise we inevitably run into issues where B_ratio_h*(1-ksi_val**2) > 1
-
-                theta_grid_j_w = theta_w_aux[:-1] + d_theta_grid_j_w/2
-                if theta_grid_j_w[-1] > theta_h[-1]:
-                    theta_grid_j_w[-1] = theta_h[-1]
-                if theta_grid_j_w[0] < theta_h[0]:
-                    theta_grid_j_w[0] = theta_h[0]
-     
+                theta_ref_lo = theta_h[0]  if not use_sparse else theta_trap[0]
+                theta_ref_hi = theta_h[-1] if not use_sparse else theta_trap[-1]
+                if theta_grid_j_w[-1] > theta_ref_hi:
+                    theta_grid_j_w[-1] = theta_ref_hi
+                if theta_grid_j_w[0]  < theta_ref_lo:
+                    theta_grid_j_w[0]  = theta_ref_lo
 
                 # From here, most is the same as the passing case, but fields and
                 # Edens must be interpolated onto the restricted theta grid.
@@ -871,23 +1109,28 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
                 # Bounce integrand for DRF0
                 DRF0_integrand = ksi0_over_ksi_j_w**2 * B_ratio_w
 
-                # Interpolate Edens onto the restricted theta grid in one vectorised call
-                Theta_grid_j_w, Npar_grid_j_w, Nperp_grid_j_w = np.meshgrid(
-                    theta_grid_j_w, npar, nperp, indexing='ij')
-                Edens_interp_lj_w = Edens_Int_at_psi((Theta_grid_j_w, Npar_grid_j_w, Nperp_grid_j_w))
+                if not use_sparse:
+                    Theta_grid_j_w, Npar_grid_j_w, Nperp_grid_j_w = np.meshgrid(
+                        theta_grid_j_w, npar, nperp, indexing='ij')
+                    Edens_interp_lj_w = Edens_Int_at_psi((Theta_grid_j_w, Npar_grid_j_w, Nperp_grid_j_w))
 
                 D_rf_lj_hw = np.zeros((len(theta_grid_j_w), len(p_norm_h), len(n)))
 
                 for n_idx, harm in enumerate(n):
                     for t, theta_val in enumerate(theta_grid_j_w):
-                        if Edens_interp_lj_w[t].max() > 0:
-                            D_rf_lj_hw[t, :, n_idx] = \
-                                D_RF_nobounce(p_norm_h, ksi_vals[t], npar, nperp,
-                                    Edens_interp_lj_w[t, :, :], Te_ref,
-                                    P[l, 0], X_w[0, t], R_w[0, t], L_w[0, t], S_w[0, t], harm, eps,
-                                    npar_tree, d_npar, d_nperp)
+                        if use_sparse:
+                            slice_t = _interpolate_sparse_slice(theta_val, sparse_l, theta_h)
+                            if not slice_t:
+                                continue
                         else:
-                            D_rf_lj_hw[t, :, n_idx] = np.zeros_like(p_norm_h)
+                            if Edens_interp_lj_w[t].max() <= 0:
+                                continue
+                            slice_t = _dense_to_sparse_slice(Edens_interp_lj_w[t])
+                        D_rf_lj_hw[t, :, n_idx] = \
+                            D_RF_nobounce(p_norm_h, ksi_vals[t], npar, nperp,
+                                slice_t, Te_ref,
+                                P[l, 0], X_w[0, t], R_w[0, t], L_w[0, t], S_w[0, t], harm, eps,
+                                npar_tree, d_npar, d_nperp)
                         
                     # Vectorised bounce integrals over p (same pattern as passing case)
                     w_base = d_theta_grid_j_w / (2 * np.pi) * CB_j_w   # shape [t]

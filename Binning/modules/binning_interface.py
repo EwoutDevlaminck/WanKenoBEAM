@@ -29,16 +29,22 @@ from scipy.io import loadmat
 def _select_weight(component, data_sim_NxNyNz=None, data_sim_VxVyVz=None,
                    data_sim_Nparallel=None, data_sim_phiN=None, data_sim_Nperp=None):
     """Return the weight array slice for a named velocity/refractive-index component."""
-    if component == "Nx":          return data_sim_NxNyNz[:,0,:]
-    elif component == "Ny":        return data_sim_NxNyNz[:,1,:]
-    elif component == "Nz":        return data_sim_NxNyNz[:,2,:]
-    elif component == "Vx":        return data_sim_VxVyVz[:,0,:]
-    elif component == "Vy":        return data_sim_VxVyVz[:,1,:]
-    elif component == "Vz":        return data_sim_VxVyVz[:,2,:]
-    elif component == "Nparallel": return data_sim_Nparallel
-    elif component == "phiN":      return data_sim_phiN
-    elif component == "Nperp":     return data_sim_Nperp
+    if component == "Nx":           return data_sim_NxNyNz[:,0,:]
+    elif component == "Ny":         return data_sim_NxNyNz[:,1,:]
+    elif component == "Nz":         return data_sim_NxNyNz[:,2,:]
+    elif component == "Vx":         return data_sim_VxVyVz[:,0,:]
+    elif component == "Vy":         return data_sim_VxVyVz[:,1,:]
+    elif component == "Vz":         return data_sim_VxVyVz[:,2,:]
+    elif component == "Nparallel":  return data_sim_Nparallel
+    elif component == "phiN":       return data_sim_phiN
+    elif component == "Nperp":      return data_sim_Nperp
+    elif component == "cos_phiN":   return np.cos(data_sim_phiN)
+    elif component == "cos2_phiN":  return np.cos(2 * data_sim_phiN)
     raise ValueError(f"Unknown velocity component: {component}")
+
+
+# Components that require TracesphiN to be loaded even if 'phiN' is not in WhatToResolve
+_PHI_N_DERIVED = frozenset(('cos_phiN', 'cos2_phiN'))
 
 
 ############################################################################
@@ -61,17 +67,27 @@ def _setup_bins(idata):
     nmbr = np.empty([4], dtype=int)
     bin_min = bin_max = bins = None
 
+    # Optional per-dimension bin widths (dict keyed by WhatToResolve variable name).
+    # When present for a dimension, nmbr is derived from ceil((max-min)/width).
+    # Dimension 0 (psi / rho, always from LUKE grid) is never modified by bin_width.
+    bin_width_map = getattr(idata, 'bin_width', {})
+
     if uniform_bins:
         bin_min = np.empty([4])
         bin_max = np.empty([4])
         for i in range(4):
             if i < len(idata.nmbr):
-                nmbr[i] = idata.nmbr[i]
                 bin_min[i] = idata.min[i]
                 bin_max[i] = idata.max[i]
                 if bin_min[i] > bin_max[i]:
                     print('ERROR: lower boundary larger than the upper one for %s\n' % idata.WhatToResolve[i])
                     raise ValueError('Invalid bin boundaries')
+                var_name = idata.WhatToResolve[i] if i < len(idata.WhatToResolve) else None
+                if i > 0 and var_name in bin_width_map:
+                    import math
+                    nmbr[i] = max(1, math.ceil((bin_max[i] - bin_min[i]) / bin_width_map[var_name]))
+                else:
+                    nmbr[i] = idata.nmbr[i]
             else:
                 nmbr[i] = 1
                 bin_min[i] = -1.
@@ -198,7 +214,7 @@ def _bin_one_file(file_idx, idata, setup):
             data_sim_Theta = fid.get('TracesTheta')[()]
         if 'Nparallel' in all_vars:
             data_sim_Nparallel = fid.get('TracesNparallel')[()]
-        if 'phiN' in all_vars:
+        if 'phiN' in all_vars or all_vars & _PHI_N_DERIVED:
             data_sim_phiN = fid.get('TracesphiN')[()]
         if 'Nperp' in all_vars:
             data_sim_Nperp = fid.get('TracesNperpendicular')[()]
@@ -267,7 +283,8 @@ def _bin_one_file(file_idx, idata, setup):
     if all_vars & {'Nx', 'Ny', 'Nz'}:  _weight_data['data_sim_NxNyNz']   = data_sim_NxNyNz
     if all_vars & {'Vx', 'Vy', 'Vz'}:  _weight_data['data_sim_VxVyVz']   = data_sim_VxVyVz
     if 'Nparallel' in all_vars:         _weight_data['data_sim_Nparallel'] = data_sim_Nparallel
-    if 'phiN' in all_vars:              _weight_data['data_sim_phiN']      = data_sim_phiN
+    if 'phiN' in all_vars or all_vars & _PHI_N_DERIVED:
+                                        _weight_data['data_sim_phiN']      = data_sim_phiN
     if 'Nperp' in all_vars:             _weight_data['data_sim_Nperp']     = data_sim_Nperp
 
     # Dispatch closure — hides uniform/nonuniform choice for the rest of this file
@@ -542,6 +559,55 @@ def _postprocess_and_write(idata, accum, setup, outputfilename):
         fid.create_dataset("curvatureradius2",   data=file_params["curvatureradius2"])
         fid.create_dataset("centraleta1",        data=file_params["centraleta1"])
         fid.create_dataset("centraleta2",        data=file_params["centraleta2"])
+
+        # --- Optional sparse output (idata.sparse_output = True) ---
+        # Writes BinnedTraces and any requested cos_phiN / cos2_phiN arrays in
+        # COO format into a 'sparse/' subgroup.  The dense datasets above are
+        # preserved unchanged for backward compatibility.
+        if getattr(idata, 'sparse_output', False) and idata.computeAmplitude and idata.storeWfct:
+            sparse_arrays = {'BinnedTraces': Wfct[:, :, :, :, 0]}
+            if idata.storeVelocityField:
+                for k, comp in enumerate(VelocityComponentsToStore):
+                    if comp in ('cos_phiN', 'cos2_phiN'):
+                        sparse_arrays[comp] = VelocityField[:, :, :, :, k, 0]
+            _write_sparse_output(fid.require_group('sparse'), sparse_arrays)
+
+
+############################################################################
+# SPARSE OUTPUT HELPER
+############################################################################
+
+def _write_sparse_output(h5_grp, dense_arrays):
+    """Write a set of same-shape 4-D arrays into h5_grp in COO sparse format.
+
+    Parameters
+    ----------
+    h5_grp      : open h5py Group (e.g. fid.require_group('sparse'))
+    dense_arrays : dict  {'BinnedTraces': ndarray, 'cos_phiN': ndarray, ...}
+                  All arrays must have the same shape (n_psi, n_theta, n_npar, n_nperp).
+
+    The nonzero support is determined from 'BinnedTraces'.  All other arrays
+    are sampled at the same nonzero locations and stored as additional value
+    datasets sharing a single index set.
+    """
+    base = dense_arrays['BinnedTraces']
+    nz = np.argwhere(base > 0)          # shape (nnz, 4)
+    nnz = len(nz)
+    if nnz == 0:
+        h5_grp.create_dataset('indices', data=np.empty((4, 0), dtype=np.int32))
+        h5_grp.create_dataset('shape',   data=np.array(base.shape, dtype=np.int32))
+        return
+
+    idx = nz.T.astype(np.int32)         # shape (4, nnz)
+    h5_grp.create_dataset('indices', data=idx,
+                          compression='gzip', shuffle=True)
+    h5_grp.create_dataset('shape',   data=np.array(base.shape, dtype=np.int32))
+
+    r0, r1, r2, r3 = nz[:, 0], nz[:, 1], nz[:, 2], nz[:, 3]
+    for name, arr in dense_arrays.items():
+        vals = arr[r0, r1, r2, r3]
+        h5_grp.create_dataset(f'values_{name}', data=vals,
+                              compression='gzip', shuffle=True)
 
 
 ############################################################################
