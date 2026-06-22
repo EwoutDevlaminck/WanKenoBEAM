@@ -60,6 +60,10 @@ def _setup_bins(idata):
       bins               (non-uniform case, else None),
       VelocityComponentsToStore, all_vars
     """
+    # Normalise optional flags onto idata so all later bare accesses are safe.
+    idata.storeVelocityField = getattr(idata, 'storeVelocityField', False)
+    idata.sparse_output      = getattr(idata, 'sparse_output', False)
+
     VelocityComponentsToStore = idata.VelocityComponentsToStore if idata.storeVelocityField else []
     all_vars = set(idata.WhatToResolve) | set(VelocityComponentsToStore)
     uniform_bins = getattr(idata, 'uniform_bins', True)

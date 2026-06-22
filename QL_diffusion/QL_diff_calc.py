@@ -20,7 +20,7 @@ from Tools.PlotData.PlotAbsorptionProfile.plotabsprofile import compute_depositi
 
 # WKBacca functions import
 from QL_diffusion.QL_diff_aux import *
-from QL_diffusion.QL_diff_aux import _compute_Edens  # underscore names excluded from import *
+from QL_diffusion.QL_diff_aux import _compute_Edens, _load_sparse_edens  # underscore names excluded from import *
 
 
 # ---------------------------------------------------------------------------
@@ -30,11 +30,23 @@ from QL_diffusion.QL_diff_aux import _compute_Edens  # underscore names excluded
 def _load_momentum_grids(idata):
     """Load or construct the momentum and pitch-angle grids.
 
+    Also reads LUKE reference plasma parameters from WKBacca_grids.mat when
+    available (ne_ref, Te_ref, lnc_e_ref), so the Python QL module uses values
+    consistent with the LUKE collision operator.
+
     Returns
     -------
     p_norm_w, p_norm_h, ksi0_w, ksi0_h : 1-D ndarrays
         Whole-grid and half-grid arrays for normalised momentum and pitch angle.
+    Ne_ref : float or None
+        Reference electron density [1e19 m⁻³].  None when not in the mat file.
+    Te_ref : float or None
+        Reference electron temperature [keV].  None when not in the mat file.
+    lnc_e_ref : float or None
+        Reference Coulomb logarithm.  None when not in the mat file.
     """
+    Ne_ref = Te_ref = lnc_e_ref = None
+
     if idata.manual_grids:
         p_norm_w = np.linspace(idata.pmin, idata.pmax, idata.np)
         anglegrid = np.linspace(-np.pi, 0, idata.nksi)
@@ -51,11 +63,17 @@ def _load_momentum_grids(idata):
             ksi0_w   = grids['ksi0_w'][0, 0][0]
             p_norm_h = grids['p_norm_h'][0, 0][0]
             p_norm_w = grids['p_norm_w'][0, 0][0]
+            # Reference plasma parameters (present only when mksa was passed to
+            # wkb_init_grids_ed; older mat files may not have them).
+            if 'ne_ref' in grids.dtype.names:
+                Ne_ref    = float(grids['ne_ref'][0, 0]) * 1e-19  # m⁻³ → 1e19 m⁻³
+                Te_ref    = float(grids['Te_ref'][0, 0])           # already keV
+                lnc_e_ref = float(grids['lnc_e_ref'][0, 0])
         except Exception as e:
             print(f"Error: Could not load the grids from the provided file: {e}")
             sys.exit(1)
 
-    return p_norm_w, p_norm_h, ksi0_w, ksi0_h
+    return p_norm_w, p_norm_h, ksi0_w, ksi0_h, Ne_ref, Te_ref, lnc_e_ref
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +235,8 @@ def call_QLdiff(input_file):
         DKE_calc   = idata.DKE_calc
 
         # Momentum / pitch-angle grids
-        p_norm_w, p_norm_h, ksi0_w, ksi0_h = _load_momentum_grids(idata)
+        p_norm_w, p_norm_h, ksi0_w, ksi0_h, \
+            Ne_ref_mat, Te_ref_mat, lnc_e_ref = _load_momentum_grids(idata)
 
         # Load 4-D (rho, Theta, Nparallel, Nperp) binned ray-tracing data
         try:
@@ -238,14 +257,31 @@ def call_QLdiff(input_file):
         d_nperp = np.diff(Nperpbins)[0]
         Nperp   = 0.5 * (Nperpbins[1:]  + Nperpbins[:-1])
 
-        # Convert WKBeam Wfct to k-space energy density (J/N^2)
-        Edens = _compute_Edens(Wfct, psi, d_psi, theta, d_theta, Nperp, d_nperp, d_npar, Eq)
-
-        # Reference plasma quantities for normalisation
         omega = phys.AngularFrequency(FreqGHz)
-        _, _, _, _, _, _, ptNe, ptTe, _, _, _, _, _ = config_quantities(psi, theta, omega, Eq)
-        Ne_ref = np.amax(ptNe)
-        Te_ref = np.amax(ptTe)
+
+        # Reference plasma quantities: prefer LUKE-consistent values from the
+        # mat file; fall back to the equilibrium maximum when unavailable.
+        if Ne_ref_mat is not None:
+            Ne_ref    = Ne_ref_mat
+            Te_ref    = Te_ref_mat
+        else:
+            _, _, _, _, _, _, ptNe, ptTe, _, _, _, _, _ = config_quantities(psi, theta, omega, Eq)
+            Ne_ref    = np.amax(ptNe)
+            Te_ref    = np.amax(ptTe)
+            lnc_e_ref = None
+
+        # Determine whether to use the sparse φ_N path.
+        # Triggered by `use_sparse = True` in the QL config, which requires the
+        # binned HDF5 to contain a `sparse/` group written by _write_sparse_output.
+        use_sparse = bool(getattr(idata, 'use_sparse', False))
+
+        if use_sparse:
+            edens_sparse_full = _load_sparse_edens(
+                filename_RhoThetaN, psi, d_psi, theta, d_theta, Npar, d_npar, Nperp, d_nperp, Eq)
+            # Dense Edens not needed for the sparse path
+            Edens = None
+        else:
+            Edens = _compute_Edens(Wfct, psi, d_psi, theta, d_theta, Nperp, d_nperp, d_npar, Eq)
 
         # Allocate result arrays: shape (n_psi, np, nksi, n_harm)
         DRF0_wh  = np.zeros((len(psi), len(p_norm_w), len(ksi0_h), len(harmonics)))
@@ -264,22 +300,28 @@ def call_QLdiff(input_file):
         Trapksi0_h = np.zeros(len(psi))
         Trapksi0_w = np.zeros(len(psi))
 
-        # Task queue: (psi_index, psi_value, Edens_slice)
-        # Sorted by descending psi so that deeply trapped (expensive) slices go first
-        task_queue = [(i, psi_val, Edens[i]) for i, psi_val in enumerate(psi)]
+        # Task queue: (psi_index, psi_value, data_slice)
+        # data_slice is a dense Edens slice or a sparse θ-dict depending on use_sparse.
+        # Sorted by descending psi so that deeply trapped (expensive) slices go first.
+        if use_sparse:
+            task_queue = [(i, psi_val, edens_sparse_full.get(i, {}))
+                          for i, psi_val in enumerate(psi)]
+        else:
+            task_queue = [(i, psi_val, Edens[i]) for i, psi_val in enumerate(psi)]
         task_queue.sort(key=lambda x: x[1], reverse=True)
 
     else:
         # Workers only need the broadcast variables; initialise to None for bcast
-        mode      = None
-        FreqGHz   = None
-        harmonics = None
-        thetabins = None
-        p_norm_w  = p_norm_h = None
-        ksi0_w    = ksi0_h   = None
-        Npar      = Nperp    = None
+        mode       = None
+        FreqGHz    = None
+        harmonics  = None
+        thetabins  = None
+        p_norm_w   = p_norm_h = None
+        ksi0_w     = ksi0_h   = None
+        Npar       = Nperp    = None
+        use_sparse = None
         Eq        = None
-        Ne_ref    = Te_ref   = None
+        Ne_ref    = Te_ref = lnc_e_ref = None
         DKE_calc  = None
 
     # -----------------------------------------------------------------------
@@ -296,9 +338,11 @@ def call_QLdiff(input_file):
     Npar      = comm.bcast(Npar,      root=0)
     Nperp     = comm.bcast(Nperp,     root=0)
     Eq        = comm.bcast(Eq,        root=0)
-    Ne_ref    = comm.bcast(Ne_ref,    root=0)
-    Te_ref    = comm.bcast(Te_ref,    root=0)
-    DKE_calc  = comm.bcast(DKE_calc,  root=0)
+    Ne_ref     = comm.bcast(Ne_ref,     root=0)
+    Te_ref     = comm.bcast(Te_ref,     root=0)
+    lnc_e_ref  = comm.bcast(lnc_e_ref, root=0)
+    DKE_calc   = comm.bcast(DKE_calc,   root=0)
+    use_sparse = comm.bcast(use_sparse, root=0)
 
     # -----------------------------------------------------------------------
     # Master process: distribute tasks and collect results
@@ -354,18 +398,30 @@ def call_QLdiff(input_file):
                 # Termination signal received
                 break
 
-            idx, psi_value, Edens_slice = task
+            idx, psi_value, data_slice = task
 
-            # D_RF expects a leading psi dimension of size 1
-            Edens_slice = np.expand_dims(Edens_slice, axis=0)
-
-            DRF0_wh_loc,  DRF0D_wh_loc,  DRF0F_wh_loc, \
-            DRF0_hw_loc,  DRF0D_hw_loc,  DRF0F_hw_loc, \
-            DRF0_hh_loc,  DRF0D_hh_loc,  \
-            Trapksi0_h_loc, Trapksi0_w_loc = \
-                D_RF([psi_value], thetabins, p_norm_w, p_norm_h, ksi0_w, ksi0_h,
-                     Npar, Nperp, Edens_slice, Eq, Ne_ref, Te_ref,
-                     n=harmonics, FreqGHz=FreqGHz, DKE_calc=DKE_calc, gaussian_smooth=True)
+            if use_sparse:
+                # Sparse path: data_slice is a θ-keyed dict for this psi surface.
+                # Remap to l=0 so D_RF can index it as edens_sparse[0].
+                DRF0_wh_loc,  DRF0D_wh_loc,  DRF0F_wh_loc, \
+                DRF0_hw_loc,  DRF0D_hw_loc,  DRF0F_hw_loc, \
+                DRF0_hh_loc,  DRF0D_hh_loc,  \
+                Trapksi0_h_loc, Trapksi0_w_loc = \
+                    D_RF([psi_value], thetabins, p_norm_w, p_norm_h, ksi0_w, ksi0_h,
+                         Npar, Nperp, None, Eq, Ne_ref, Te_ref,
+                         n=harmonics, FreqGHz=FreqGHz, DKE_calc=DKE_calc, gaussian_smooth=True,
+                         edens_sparse={0: data_slice}, lnc_e_ref=lnc_e_ref)
+            else:
+                # Dense path: data_slice is a (n_theta, n_npar, n_nperp) array.
+                Edens_slice = np.expand_dims(data_slice, axis=0)
+                DRF0_wh_loc,  DRF0D_wh_loc,  DRF0F_wh_loc, \
+                DRF0_hw_loc,  DRF0D_hw_loc,  DRF0F_hw_loc, \
+                DRF0_hh_loc,  DRF0D_hh_loc,  \
+                Trapksi0_h_loc, Trapksi0_w_loc = \
+                    D_RF([psi_value], thetabins, p_norm_w, p_norm_h, ksi0_w, ksi0_h,
+                         Npar, Nperp, Edens_slice, Eq, Ne_ref, Te_ref,
+                         n=harmonics, FreqGHz=FreqGHz, DKE_calc=DKE_calc, gaussian_smooth=True,
+                         lnc_e_ref=lnc_e_ref)
 
             result_data = (
                 DRF0_wh_loc[0],  DRF0D_wh_loc[0],  DRF0F_wh_loc[0],

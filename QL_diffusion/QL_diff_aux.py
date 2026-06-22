@@ -674,12 +674,11 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
     Rp, Zp = Eq.magn_axis_coord_Rz /100 #m
     ptR, ptZ, ptBt, ptBR, ptBz, ptB, ptNe, ptTe, P, X, R, L, S = config_quantities(psi, theta_h, omega, Eq)
 
-    if use_sparse:
-        # Dedicated fine geometry grid (360 pts) for accurate trapping-boundary detection.
-        # This grid is independent of the binning resolution and is never used for Edens.
-        theta_trap = np.linspace(-np.pi, np.pi, 361)[:-1]
-        ptR_tr, ptZ_tr, _, ptBR_tr, ptBz_tr, ptB_tr, _, _, _, _, _, _, _ = \
-            config_quantities(psi, theta_trap, omega, Eq)
+    # Dedicated fine geometry grid (360 pts) for accurate trapping-boundary detection.
+    # Always computed — used by both dense and sparse paths.  Never used for Edens.
+    theta_trap = np.linspace(-np.pi, np.pi, 361)[:-1]
+    ptR_tr, ptZ_tr, _, ptBR_tr, ptBz_tr, ptB_tr, _, _, _, _, _, _, _ = \
+        config_quantities(psi, theta_trap, omega, Eq)
 
     # --- Quantities that are constant across all psi and ksi values ---
 
@@ -756,25 +755,23 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
             sparse_l = edens_sparse.get(l, {})
             occupied_theta_set = set(sparse_l.keys())
         else:
-            # --- Dense path: use the binned theta_h grid for trapping detection ---
-            # B-field interpolant used by Trapping_boundary (needs extrapolation for safety)
-            ptB_Int_at_psi = interp1d(theta_h, ptB[l, :], fill_value=np.amax(ptB[l, :]), bounds_error=False)
+            # --- Dense path: use the fine theta_trap grid for trapping detection ---
+            # Edens is still interpolated on theta_h below; theta_trap is only for geometry.
+            ptB_Int_at_psi = interp1d(theta_trap, ptB_tr[l, :],
+                                      fill_value=np.amax(ptB_tr[l, :]), bounds_error=False)
+            B0_psi, Bmax_psi = minmaxB(ptB_Int_at_psi, theta_trap)
 
-            # B_min and B_max from the ptB interpolant — must be self-consistent
-            # with B_at_psi values used later in ksi_vals = sqrt(1 - B/B0*(1-ksi0²)).
-            B0_psi, Bmax_psi = minmaxB(ptB_Int_at_psi, theta_h)
-
-            _, Trapksi0_w[l], theta_T_w[l] = Trapping_boundary(ksi0_w, ptB_Int_at_psi, theta_h,
+            _, Trapksi0_w[l], theta_T_w[l] = Trapping_boundary(ksi0_w, ptB_Int_at_psi, theta_trap,
                                                                  B0_in=B0_psi, Bmax_in=Bmax_psi)
-            _, Trapksi0_h[l], theta_T_h[l] = Trapping_boundary(ksi0_h, ptB_Int_at_psi, theta_h,
+            _, Trapksi0_h[l], theta_T_h[l] = Trapping_boundary(ksi0_h, ptB_Int_at_psi, theta_trap,
                                                                  B0_in=B0_psi, Bmax_in=Bmax_psi)
 
-            # Per-field interpolants over theta_h, built once per psi.
-            ptB_interp  = interp1d(theta_h, ptB[l, :])
-            ptBR_interp = interp1d(theta_h, ptBR[l, :])
-            ptBz_interp = interp1d(theta_h, ptBz[l, :])
-            ptR_interp  = interp1d(theta_h, ptR[l, :])
-            ptZ_interp  = interp1d(theta_h, ptZ[l, :])
+            # Per-field geometry interpolants on the fine grid, matching the sparse path.
+            ptB_interp  = interp1d(theta_trap, ptB_tr[l, :])
+            ptBR_interp = interp1d(theta_trap, ptBR_tr[l, :])
+            ptBz_interp = interp1d(theta_trap, ptBz_tr[l, :])
+            ptR_interp  = interp1d(theta_trap, ptR_tr[l, :])
+            ptZ_interp  = interp1d(theta_trap, ptZ_tr[l, :])
 
         #--------------------------------#
         #---Bounce averaging calculation-#
@@ -886,20 +883,17 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
                 # The theta roots are the boundaries of the region where the particles are trapped
                 theta_T_m, theta_T_M = theta_T_h[l, j]
 
-                if use_sparse:
-                    # Build the trapped theta sub-grid from the fine theta_trap grid.
-                    # This ensures accurate bounce integration regardless of binning resolution.
-                    theta_trap_clip = theta_trap[(theta_trap >= theta_T_m) & (theta_trap <= theta_T_M)]
-                    theta_w_aux = np.concatenate(([theta_T_m], theta_trap_clip, [theta_T_M]))
-                else:
-                    theta_w_aux = theta_w[(theta_w >= theta_T_m) & (theta_w <= theta_T_M)]
-                    theta_w_aux = np.concatenate(([theta_T_m], theta_w_aux, [theta_T_M]))
+                # Both dense and sparse use theta_w (bin edges) as boundaries.
+                # Midpoints then land on theta_h bin centres, so Edens lookups are exact
+                # and identical between the two paths — required for 1e-11 parity.
+                theta_w_clip = theta_w[(theta_w >= theta_T_m) & (theta_w <= theta_T_M)]
+                theta_w_aux = np.concatenate(([theta_T_m], theta_w_clip, [theta_T_M]))
 
                 d_theta_grid_j_h = np.diff(theta_w_aux)
                 theta_grid_j_h   = theta_w_aux[:-1] + d_theta_grid_j_h/2
 
-                theta_ref_lo = theta_h[0]  if not use_sparse else theta_trap[0]
-                theta_ref_hi = theta_h[-1] if not use_sparse else theta_trap[-1]
+                theta_ref_lo = theta_h[0]
+                theta_ref_hi = theta_h[-1]
                 if theta_grid_j_h[-1] > theta_ref_hi:
                     theta_grid_j_h[-1] = theta_ref_hi
                 if theta_grid_j_h[0]  < theta_ref_lo:
@@ -917,6 +911,9 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
                 Z_axis_at_psi_j_h = ptZ_interp(theta_grid_j_h) - Zp
 
                 # Stix parameters on the restricted theta grid (only theta-dependent ones)
+                # -0.0 % (2π) == 2π in IEEE 754, which breaks __maximum_r__.
+                # Adding 0.0 converts -0.0 → +0.0 without changing any other value.
+                theta_grid_j_h = theta_grid_j_h + 0.0
                 _, _, _, _, _, _, _, _, _, X_h, R_h, L_h, S_h = config_quantities([psi_l], theta_grid_j_h, omega, Eq)
 
                 # Bounce integral kernel [t]
@@ -1064,18 +1061,15 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
                 # The theta roots are the boundaries of the region where the particles are trapped
                 theta_T_m, theta_T_M = theta_T_w[l, j]
 
-                if use_sparse:
-                    theta_trap_clip = theta_trap[(theta_trap >= theta_T_m) & (theta_trap <= theta_T_M)]
-                    theta_w_aux = np.concatenate(([theta_T_m], theta_trap_clip, [theta_T_M]))
-                else:
-                    theta_w_aux = theta_w[(theta_w >= theta_T_m) & (theta_w <= theta_T_M)]
-                    theta_w_aux = np.concatenate(([theta_T_m], theta_w_aux, [theta_T_M]))
+                # Both dense and sparse use theta_w (bin edges) as boundaries.
+                theta_w_clip = theta_w[(theta_w >= theta_T_m) & (theta_w <= theta_T_M)]
+                theta_w_aux = np.concatenate(([theta_T_m], theta_w_clip, [theta_T_M]))
 
                 d_theta_grid_j_w = np.diff(theta_w_aux)
                 theta_grid_j_w   = theta_w_aux[:-1] + d_theta_grid_j_w/2
 
-                theta_ref_lo = theta_h[0]  if not use_sparse else theta_trap[0]
-                theta_ref_hi = theta_h[-1] if not use_sparse else theta_trap[-1]
+                theta_ref_lo = theta_h[0]
+                theta_ref_hi = theta_h[-1]
                 if theta_grid_j_w[-1] > theta_ref_hi:
                     theta_grid_j_w[-1] = theta_ref_hi
                 if theta_grid_j_w[0]  < theta_ref_lo:
@@ -1091,6 +1085,8 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
                 R_axis_at_psi_j_w = ptR_interp(theta_grid_j_w) - Rp
                 Z_axis_at_psi_j_w = ptZ_interp(theta_grid_j_w) - Zp
 
+                # -0.0 % (2π) == 2π in IEEE 754, which breaks __maximum_r__.
+                theta_grid_j_w = theta_grid_j_w + 0.0
                 # Stix parameters on the restricted theta grid
                 _, _, _, _, _, _, _, _, _, X_w, R_w, L_w, S_w = config_quantities([psi_l], theta_grid_j_w, omega, Eq)
 

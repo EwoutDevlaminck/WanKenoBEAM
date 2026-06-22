@@ -576,6 +576,9 @@ class MagneticSurfaces(object):
 
         # Preliminary calculation
         theta = theta % (2. * np.pi)
+        # A tiny negative theta can round to exactly 2π after modulo (float64 edge case).
+        if theta >= 2. * np.pi:
+            theta = 0.
         cst = np.cos(theta)
         snt = np.sin(theta)
 
