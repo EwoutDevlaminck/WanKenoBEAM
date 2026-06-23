@@ -139,6 +139,99 @@ def add_Xmode_cutoff(R, Z, StixX, StixY, axes):
     return X_cutoff
 
 
+# Computing the characteristic radii for a top-down (X,Y) overlay
+def topdown_radii(Eq, FreqGHz, harm_n=2, ntheta=200):
+
+    """
+    Compute the characteristic major radii needed to overlay a top-down
+    (X,Y) plot with circles: the magnetic axis, the inboard/outboard extent
+    of the LCFS (psi=1), and the cold n-th harmonic resonance radius on the
+    midplane (StixY = omega_ce/omega = 1/n).
+
+    Usage:
+           R_axis, R_lcfs_min, R_lcfs_max, R_harm = \\
+               topdown_radii(Eq, FreqGHz, harm_n, ntheta)
+
+    where Eq is an equilibrium object (e.g. TokamakEquilibrium) and FreqGHz
+    is the wave frequency in GHz. R_harm is None if the resonance condition
+    is not satisfied anywhere on the midplane within the LCFS R-range.
+    """
+
+    import scipy.optimize as opt
+    from CommonModules.PlasmaEquilibrium import StixParamSample
+
+    R_axis, Z_axis = Eq.magn_axis_coord_Rz
+
+    # LCFS (psi=1) extent: sample (psi=1, theta) -> (R, Z) over the full
+    # poloidal angle and take the min/max R reached.
+    theta = np.linspace(0., 2.*np.pi, ntheta, endpoint=False)
+    R_lcfs = np.array([Eq.flux_to_grid_coord(1.0, th)[0] for th in theta])
+    R_lcfs_min, R_lcfs_max = R_lcfs.min(), R_lcfs.max()
+
+    # Cold n-th harmonic resonance on the midplane: StixY(R, Z_axis) = 1/n.
+    # Sample StixY along R at fixed Z = Z_axis and bracket the first sign
+    # change of (StixY - 1/n), then refine with a root finder.
+    R1d = np.linspace(R_lcfs_min, R_lcfs_max, 400)
+    _, StixY1d, _ = StixParamSample(R1d, np.array([Z_axis]), Eq, FreqGHz)
+    target = 1.0 / harm_n
+    f = StixY1d[0, :] - target
+
+    R_harm = None
+    sign_change = np.where(np.diff(np.sign(f)) != 0)[0]
+    if len(sign_change) > 0:
+        i = sign_change[0]
+
+        def _f(R):
+            _, sY, _ = StixParamSample(np.array([R]), np.array([Z_axis]), Eq, FreqGHz)
+            return sY[0, 0] - target
+
+        R_harm = opt.brentq(_f, R1d[i], R1d[i+1])
+
+    return R_axis, R_lcfs_min, R_lcfs_max, R_harm
+
+
+# Plotting the top-down (X,Y) overlay circles
+def add_topdown_circles(axes, R_axis, R_lcfs_min, R_lcfs_max, R_harm=None, harm_n=2):
+
+    """
+    Overlay the magnetic axis, LCFS inboard/outboard extent, and (optionally)
+    a cold harmonic resonance radius as circles centred on the device axis
+    (X=Y=0), on a top-down (X,Y) plot.
+
+    Usage:
+           h_axis, h_lcfs, h_harm = \\
+               add_topdown_circles(axes, R_axis, R_lcfs_min, R_lcfs_max, R_harm, harm_n)
+
+    R_axis, R_lcfs_min, R_lcfs_max, R_harm are major radii in the same units
+    as the (X,Y) axes (cm, typically), as returned by topdown_radii(). Pass
+    R_harm=None to skip the resonance circle. harm_n only sets the line
+    style/label (matching add_cyclotron_resonances: 1->dotted, 2->dashdot,
+    3->dashed). axes is the matplotlib Axes to draw on.
+
+    Returns (h_axis, (h_lcfs_in, h_lcfs_out), h_harm); h_harm is None if
+    R_harm was None.
+    """
+
+    theta = np.linspace(0., 2.*np.pi, 200)
+    cst, snt = np.cos(theta), np.sin(theta)
+
+    h_axis, = axes.plot(R_axis*cst, R_axis*snt,
+                         color='grey', linestyle='dashed', linewidth=1,
+                         label='Magnetic axis')
+    h_lcfs_in,  = axes.plot(R_lcfs_min*cst, R_lcfs_min*snt,
+                             color='r', linewidth=1, label='LCFS')
+    h_lcfs_out, = axes.plot(R_lcfs_max*cst, R_lcfs_max*snt,
+                             color='r', linewidth=1)
+
+    h_harm = None
+    if R_harm is not None:
+        style = {1: 'dotted', 2: 'dashdot', 3: 'dashed'}.get(harm_n, 'dashdot')
+        h_harm, = axes.plot(R_harm*cst, R_harm*snt, color='lime', linestyle=style,
+                             label='{}-th harmonic'.format(harm_n))
+
+    return h_axis, (h_lcfs_in, h_lcfs_out), h_harm
+
+
 def add_UHresonance(R, Z, StixX, StixY, axes):
 
     """

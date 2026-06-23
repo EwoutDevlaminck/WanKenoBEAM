@@ -106,6 +106,7 @@ def _load_beam_data(filename):
         R_cm         1-D array     Bin-centre R coordinates [cm].
         Z_cm         1-D array     Bin-centre Z coordinates [cm].
         Wfct         2-D array     Mean energy density [J/m³], shape (nR, nZ).
+        Wfct_unc     2-D array     Statistical uncertainty on Wfct [J/m³], shape (nR, nZ).
         Absorption   2-D array     Mean absorbed power density [MW/m³], or None.
         P_abs        1-D array     Total absorbed power [MW], shape (2,) = [mean, rms],
                                    or None if absorption was not recorded.
@@ -206,6 +207,7 @@ def _load_beam_data(filename):
         R_cm         = R_cm,
         Z_cm         = Z_cm,
         Wfct         = Wfct[:, :, 0],              # mean channel (index 0)
+        Wfct_unc     = Wfct[:, :, 1],              # statistical uncertainty (index 1)
         Absorption   = Absorption[:, :, 0] if Abs_recorded else None,
         P_abs        = P_abs,
         Velocity     = Velocity,

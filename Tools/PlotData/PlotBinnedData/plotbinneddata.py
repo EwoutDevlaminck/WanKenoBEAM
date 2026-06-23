@@ -1,245 +1,255 @@
-"""This file reads binned data file, where R (or alternatively X) and Z should 
-be resolved and does a 2D-plot of it.
+"""This file reads a 2-D binned data file -- either an axisymmetric (R,Z)
+(poloidal-plane) binning or a top-down (X,Y) binning -- and plots the beam
+intensity and its statistical uncertainty, overlaid on the equilibrium.
+
+Layout and beam colour/colormap conventions mirror beamFluct
+(Tools/PlotData/PlotFluctuations/plotBeamFluctuations.py): same per-beam
+colour sequence, same white-to-colour blended colormap, same absorption
+overlay (afmhot). Unlike beamFluct, there is no fluctuation-amplitude
+background and no vessel.
 """
 
 import numpy as np
 import h5py
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.colors as clrs
 
 from CommonModules.input_data import InputData
 from CommonModules.PlasmaEquilibrium import IntSample, StixParamSample
-from CommonModules.PlasmaEquilibrium import ModelEquilibrium
 from CommonModules.PlasmaEquilibrium import TokamakEquilibrium, TokamakEquilibrium2
 from Tools.PlotData.CommonPlotting import plotting_functions
-def plot_binned(inputdata):
-	#changed by Ewout, get the flux surface info from the configfile
-    inputfilenames, configfile = inputdata[0:-1], inputdata[-1]
-    # read the data from data file given in inputfilename
-    FreqGHz = []
-    mode = []
-    Wfct = []
-    Absorption = []
-    Velocity = []
+from Tools.PlotData.PlotFluctuations.plotBeamFluctuations import _load_beam_data
 
-    for i,file in enumerate(inputfilenames):
-        print('Reading data file...\n')
-        fid = h5py.File(file,'r')
-        FreqGHz.append(fid.get('FreqGHz')[()])
-        mode.append(fid.get('Mode')[()])
-        Wfct.append(fid.get('BinnedTraces')[()])
-        try:
-            Absorption.append(id.get('Absorption')[()])
-            Abs_recorded = True
-        except:
-            Abs_recorded = False
-        try:
-            Velocity.append(fid.get('VelocityField')[()])
-            # Stored as a tuple of size (N_1stdim, N_2nddim, Component, 0)
-            Vel_recorded = True
-        except:
-            Vel_recorded = False
-            
-        try:
-            Xmin = fid.get('Xmin')[()]
-            Xmax = fid.get('Xmax')[()]
-            nmbrX = fid.get('nmbrX')[()]
-            resolve = "X"
-        except:
-            Xmin = fid.get('Rmin')[()]
-            Xmax = fid.get('Rmax')[()]
-            nmbrX = fid.get('nmbrR')[()]
-            resolve = "R"
-
-        try:
-            resolveY = True
-            Zmin = fid.get('Ymin')[()]
-            Zmax = fid.get('Ymax')[()]
-            nmbrZ = fid.get('nmbrY')[()]
-        except:
-            resolveY = False
-
-        try:
-            resolveZ = True
-            Zmin = fid.get('Zmin')[()]
-            Zmax = fid.get('Zmax')[()]
-            nmbrZ = fid.get('nmbrZ')[()]
-        except:
-            resolveZ = False
+# Colour sequence for successive beam overlays (same as beamFluct)
+_BEAM_COLOURS = ['#007480', '#F39869', '#413C3A', '#00A79F']
 
 
-        try:
-            resolveNpar = True
-            Nparallelmin = fid.get('Nparallelmin')[()]
-            Nparallelmax = fid.get('Nparallelmax')[()]
-            nmbrNparallel = fid.get('nmbrNparallel')[()]
-        except:
-            resolveNpar = False
+def _load_beam_data_topdown(filename):
+    """Load one (X,Y)-binned (top-down) HDF5 file.
 
+    Unlike the axisymmetric (R,Z) case handled by _load_beam_data, an (X,Y)
+    bin is not a toroidal shell of known volume -- Z is unresolved, so each
+    bin mixes contributions from all Z. No toroidal-volume unit conversion
+    is applied here: values are simple areal densities (native binning
+    units / bin area), matching what this view already produced before this
+    rewrite. Returned dict keys mirror _load_beam_data's, so the rest of the
+    plotting code can treat both cases uniformly.
+    """
+    with h5py.File(filename, 'r') as fid:
+        FreqGHz  = fid['FreqGHz'][()]
+        mode     = fid['Mode'][()]
+        Wfct_raw = fid['BinnedTraces'][()]
 
+        Abs_recorded = 'Absorption' in fid
+        Abs_raw      = fid['Absorption'][()] if Abs_recorded else None
 
-        fid.close()
+        Xmin = fid['Xmin'][()]; Xmax = fid['Xmax'][()]; nX = int(fid['nmbrX'][()])
+        Ymin = fid['Ymin'][()]; Ymax = fid['Ymax'][()]; nY = int(fid['nmbrY'][()])
 
-	
+        resolveNpar = 'Nparallelmin' in fid
 
-        # calculate the corresponding cube-edgelength
-        DeltaX = (Xmax-Xmin)/nmbrX
-        DeltaZ = (Zmax-Zmin)/nmbrZ
-
-        #if resolveY == True:
-        #    Wfct[i] = np.sum(Wfct[i],axis=1)
-        if resolveNpar == True:
-            Wfct[i] = np.sum(Wfct[i],axis=2)
-
-
-
-        Wfct[i] = Wfct[i]/DeltaX/DeltaZ
-        
+    if resolveNpar:
+        Wfct_raw = np.sum(Wfct_raw, axis=2)
         if Abs_recorded:
-            Absorption[i] /= DeltaX*DeltaZ
+            Abs_raw = np.sum(Abs_raw, axis=2)
+
+    X_cm = np.linspace(Xmin, Xmax, nX)
+    Y_cm = np.linspace(Ymin, Ymax, nY)
+    area = (Xmax - Xmin) / nX * (Ymax - Ymin) / nY
+
+    Wfct = Wfct_raw / area
+
+    if Abs_recorded:
+        P_abs      = np.sum(Abs_raw, axis=(0, 1))   # shape (2,): [mean, rms]
+        Absorption = Abs_raw / area
+    else:
+        Absorption = None
+        P_abs      = None
+
+    return dict(
+        FreqGHz      = FreqGHz,
+        mode         = mode,
+        R_cm         = X_cm,
+        Z_cm         = Y_cm,
+        Wfct         = Wfct[:, :, 0],
+        Wfct_unc     = Wfct[:, :, 1],
+        Absorption   = Absorption[:, :, 0] if Abs_recorded else None,
+        P_abs        = P_abs,
+        Abs_recorded = Abs_recorded,
+        beam_extent  = (Xmin, Xmax, Ymin, Ymax),
+    )
 
 
-    """Part underneath added by Ewout"""
-    # Load the input data fro the ray tracing configuration file
+def plot_binned(inputdata):
+    """Plot the binned beam intensity and uncertainty, overlaid on the
+    equilibrium.
+
+    Parameters
+    ----------
+    inputdata : list
+        All elements except the last are paths to binned HDF5 files
+        (either (R,Z) or (X,Y) binning -- determined from the first file).
+        The last element is the path to the RayTracing configuration file.
+    """
+    inputfilenames, configfile = inputdata[0:-1], inputdata[-1]
+
     idata = InputData(configfile)
 
-    # Load the equilibrium, depending on the type of device
-    # and extract the appropriate function to visualize the equilibrium:
-    # either the psi coordinate for tokamaks or the density
-    # for generic axisymmetric devices (TORPEX).
-    if idata.equilibrium == 'Tokamak' and resolveZ:
+    # -------------------------------------------------------------------
+    # Figure out which view we're dealing with, from the first file, and
+    # load all beams accordingly.
+    # -------------------------------------------------------------------
+    with h5py.File(inputfilenames[0], 'r') as fid:
+        resolveZ_file = ('Zmin' in fid) or ('Zbins' in fid)
+        resolveY_file = (('Ymin' in fid) or ('Ybins' in fid)) and not resolveZ_file
 
-        Eq = TokamakEquilibrium(idata)
+    if resolveZ_file:
+        print('Reading data file(s) (R/X, Z binning)...')
+        beams       = [_load_beam_data(f) for f in inputfilenames]
+        axis_labels = ('$R$ [cm]', '$Z$ [cm]')
+    elif resolveY_file:
+        print('Reading data file(s) (X, Y top-down binning)...')
+        beams       = [_load_beam_data_topdown(f) for f in inputfilenames]
+        axis_labels = ('$X$ [cm]', '$Y$ [cm]')
+    else:
+        raise ValueError('plot_binned: could not determine whether the '
+                          'binned file resolves (R,Z) or (X,Y).')
 
+    any_abs = any(b['Abs_recorded'] for b in beams)
+    if any_abs:
+        P_abs_total = sum(b['P_abs'] for b in beams if b['P_abs'] is not None)
 
-        # Define the grid on the poloidal plane of the device
-        #
-        print('Using resolution nptR = {}, nptZ = {}'.format(nmbrX, nmbrZ))
-        #
-        R1d = np.linspace(Xmin, Xmax, nmbrX)
-        Z1d = np.linspace(Zmin, Zmax, nmbrZ)
+    # -------------------------------------------------------------------
+    # Equilibrium (only for Tokamak/Tokamak2D devices)
+    # -------------------------------------------------------------------
+    has_equilibrium = idata.equilibrium in ('Tokamak', 'Tokamak2D')
 
-        # Position of the magnetic axis
-        axis = Eq.magn_axis_coord_Rz
+    if has_equilibrium:
+        Eq = TokamakEquilibrium(idata) if idata.equilibrium == 'Tokamak' \
+            else TokamakEquilibrium2(idata)
 
-        StixX, StixY, field_and_density = StixParamSample(R1d, Z1d, Eq, idata.freq)
+        if resolveZ_file:
+            # Dedicated equilibrium grid (independent of the binning
+            # resolution), as in beamFluct.
+            Rmin, Rmax = Eq.Rgrid[0, 0], Eq.Rgrid[-1, 0]
+            Zmin, Zmax = Eq.zgrid[0, 0], Eq.zgrid[0, -1]
+            nptR = int((Rmax - Rmin) / (idata.rmin / 100.))
+            nptZ = int((Zmax - Zmin) / (idata.rmin / 100.))
+            print('Equilibrium grid: nptR={}, nptZ={}'.format(nptR, nptZ))
+            R1d = np.linspace(Rmin, Rmax, nptR)
+            Z1d = np.linspace(Zmin, Zmax, nptZ)
 
+            _, StixY, _ = StixParamSample(R1d, Z1d, Eq, idata.freq)
+            psi = IntSample(R1d, Z1d, Eq.PsiInt.eval)
+            rho = np.sqrt(psi)
+        else:
+            # Top-down view: no poloidal grid -- just the characteristic
+            # radii, drawn as circles centred on X=Y=0.
+            R_axis, R_lcfs_min, R_lcfs_max, R_harm2 = plotting_functions.topdown_radii(
+                Eq, idata.freq, harm_n=2)
 
-        # Define the quantity for the visualization of the equilibrium
-        psi = IntSample(R1d, Z1d, Eq.PsiInt.eval)
-        equilibrium = psi 
-        Ne = IntSample(R1d, Z1d, Eq.NeInt.eval)
-            
-    if idata.equilibrium == 'Tokamak2D' and resolveZ:
-
-        Eq = TokamakEquilibrium2(idata)
-
-
-        # Define the grid on the poloidal plane of the device
-        #
-        print('Using resolution nptR = {}, nptZ = {}'.format(nmbrX, nmbrZ))
-        #
-        R1d = np.linspace(Xmin, Xmax, nmbrX)
-        Z1d = np.linspace(Zmin, Zmax, nmbrZ)
-
-        # Position of the magnetic axis
-        axis = Eq.magn_axis_coord_Rz
-
-        StixX, StixY, field_and_density = StixParamSample(R1d, Z1d, Eq, idata.freq)
-
-
-        # Define the quantity for the visualization of the equilibrium
-        psi = IntSample(R1d, Z1d, Eq.PsiInt.eval)
-        equilibrium = psi 
-        Ne = IntSample(R1d, Z1d, Eq.NeInt.eval)
-        
-    """Until here"""
-
-
-    # plot the resulting 2D-array over X,Z indices
-    # therefore: first generate X and Z vectors
-    #Xlist = np.linspace(0.,1.,plotnmbrS)
-    Xlist = np.linspace(Xmin,Xmax,nmbrX)
-    Zlist = np.linspace(Zmin,Zmax,nmbrZ)
-    Zgrid, Xgrid = np.meshgrid(Zlist, Xlist)
-
-
-    # and plot
-    print('Plotting data...\n')
-
-    import matplotlib.pyplot as plt
-    import matplotlib.colors as clrs
-
-    plt.figure(1, figsize=(8, 6))
-    #adjustprops = dict(left=0.14, bottom=0.1, right=0.95, top=0.85, wspace=0.2, hspace=0.48)
-    #plt.subplots_adjust(**adjustprops)
+    # -------------------------------------------------------------------
+    # Figure: intensity (left) and statistical uncertainty (right)
+    # -------------------------------------------------------------------
+    print('Plotting data...')
 
     plt.rcParams.update({'font.size': 16})
-    plt.rc('xtick', labelsize=16) 
-    plt.rc('ytick', labelsize=16) 
-	
-    ax = plt.subplot(121, aspect='equal')
-    if idata.equilibrium == 'Tokamak' and resolveZ:
-        plt.contour(R1d, Z1d, equilibrium, np.linspace(0, 2, 19), colors='grey', linestyles='dashed', linewidths=1)
-        plt.contour(R1d, Z1d, equilibrium, [1.], colors='r', linewidths=1)
-    Wfct = np.sum(Wfct, axis=0)
-    if Vel_recorded:
-        Vel_amplitude = [ np.sqrt(Velocity[i][:, :, 0, 0]**2 + Velocity[i][:, :, 1, 0]**2) for i in range(len(Velocity))]
-        Vel_amplitude = np.sum(Vel_amplitude, axis=0)
-        E_density = plt.contourf(Xgrid, Zgrid, Vel_amplitude/Wfct[:,:,0], 100, cmap='cividis')
-        #E_density = plt.contourf(Xgrid,Zgrid,Wfct[:,:,0],100, cmap='cividis')
-        plt.colorbar(E_density, shrink=0.6)
-        #plt.xlim(95, 115)
-        #plt.ylim(-10, 10)
-        plt.title('Group velocity \n f = '+str(FreqGHz)+' GHz')
-    else:
-        E_density = plt.contourf(Xgrid,Zgrid,Wfct[:,:,0],100, cmap='cividis')
-        plt.colorbar(E_density, shrink=0.6)
-        plt.title('E-field energy density \n f = '+str(FreqGHz)+' GHz')
-    if Abs_recorded:
-        Absorption = np.sum(Absorption, axis=0)
-        levels = np.linspace(np.amax(Absorption)/100, np.amax(Absorption), 10)
-        abs_coeff = np.where(Wfct[:, :, 0]>0., Absorption[:, :, 0] / Wfct[:, :, 0], 0.)
-        plt.contour(Xgrid,Zgrid,Absorption[:,:0],levels=100, cmap='afmhot')
-        plt.colorbar(E_density, shrink=0.6)
-    if resolveZ:
-        h1, h2, h3 = plotting_functions.add_cyclotron_resonances(R1d, Z1d, StixY, ax)
-    #plot the flux surfaces to see where the plasma is situated  
+    plt.rc('xtick', labelsize=16)
+    plt.rc('ytick', labelsize=16)
 
+    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
 
-    
+    panels = [
+        (axes[0], 'Wfct',     'Wave intensity\n' + r'$|E|^2$',                True),
+        (axes[1], 'Wfct_unc', 'Statistical uncertainty\non ' + r'$|E|^2$',    False),
+    ]
 
-    if resolve == "X":
-        plt.xlabel('X (cm)')
-    else:
-        plt.xlabel('R (cm)')
-    if resolveZ:
-        plt.ylabel('Z (cm)')
-    else:
-        plt.ylabel('Y (cm)')
+    c_white_semi = clrs.colorConverter.to_rgba('white', alpha=0.8)
 
+    RR_b = ZZ_b = None   # last beam's coordinate mesh, reused for the absorption overlay
 
+    for ax, key, title, show_abs in panels:
 
-    plt.subplot(122, aspect='equal')
-    plt.contourf(Xgrid,Zgrid,Wfct[:,:,1],100, cmap='cividis')
-    plt.colorbar(shrink=0.6)
-    if idata.equilibrium == 'Tokamak' and resolveZ:    
-        #plot the flux surfaces to see where the plasma is situated
-        plt.contour(R1d, Z1d, equilibrium, np.linspace(0, 2, 19), colors='grey', linestyles='dashed', linewidths=1)
-        #LCFS
-        plt.contour(R1d, Z1d, equilibrium, [1.], colors='r', linewidths=1)
+        ax.set_aspect('equal')
 
-    plt.title('Statistical uncertainty \n on |E²|')
+        # -- Equilibrium overlay ---------------------------------------
+        if has_equilibrium:
+            if resolveZ_file:
+                ax.contour(R1d, Z1d, rho, np.arange(0., np.amax(rho), 0.1),
+                           colors='grey', linestyles='dashed', linewidths=1, zorder=3)
+                ax.contour(R1d, Z1d, rho, [1.],
+                           colors='black', linestyles='solid', linewidths=1, zorder=6)
+            else:
+                plotting_functions.add_topdown_circles(
+                    ax, R_axis, R_lcfs_min, R_lcfs_max, R_harm2, harm_n=2)
+                ax.legend(fontsize=8, loc='upper right')
 
-    if resolve == "X":
-        plt.xlabel('X (cm)')
-    else:
-        plt.xlabel('R (cm)')
-    plt.ylabel('Z (cm)')
+        # -- Beam overlays (same colour/colormap convention as beamFluct) --
+        for i, beam in enumerate(beams):
+            _, RR_b = np.meshgrid(beam['Z_cm'], beam['R_cm'])   # (nR, nZ)
+            ZZ_b, _ = np.meshgrid(beam['Z_cm'], beam['R_cm'])
 
+            Q = beam[key]
 
+            colour    = _BEAM_COLOURS[i % len(_BEAM_COLOURS)]
+            cmap_full = clrs.LinearSegmentedColormap.from_list(
+                'beam_full', [c_white_semi, colour], 512)
+            cmap_beam = clrs.LinearSegmentedColormap.from_list(
+                'beam', [cmap_full(0.25), colour], 512)
+            cmap_beam.set_under(alpha=0.)
 
+            upper = np.amax(Q)
+            lower = upper * 1e-2   # display values down to 1 % of peak
+
+            bm = ax.pcolormesh(RR_b, ZZ_b, Q, vmin=lower, vmax=upper,
+                               cmap=cmap_beam, zorder=9)
+            cb_beam = plt.colorbar(bm, ax=ax, orientation='vertical', pad=0.1, shrink=0.7)
+            unit = r'$\mathrm{J/m}^3$' if resolveZ_file else 'a.u.'
+            cb_beam.set_label(
+                '$|E|^2$ ({})\n$f={:.1f}$ GHz'.format(unit, beam['FreqGHz']),
+                size=9, labelpad=-30, y=1.08, rotation=0)
+
+        # -- Absorption overlay (intensity panel only) -------------------
+        if show_abs and any_abs:
+            Absorption_total = sum(b['Absorption'] for b in beams
+                                    if b['Absorption'] is not None)
+            cmap_abs = matplotlib.colormaps['afmhot'].copy()
+            cmap_abs.set_under(alpha=0.)
+            peak = np.amax(Absorption_total)
+            ab = ax.contourf(RR_b, ZZ_b, Absorption_total,
+                             levels=100, vmin=peak / 50., cmap=cmap_abs, zorder=12)
+            cb_abs = plt.colorbar(ab, ax=ax, orientation='vertical', pad=0.1, shrink=0.7)
+            unit = r'\mathrm{MW/m}^3' if resolveZ_file else r'\mathrm{a.u.}'
+            cb_abs.set_label(r'$P_\mathrm{{abs}}$ ({})'.format(unit),
+                             size=9, labelpad=-30, y=1.08, rotation=0)
+
+        # -- Cyclotron resonances (R,Z view only; the top-down view already
+        #    drew the 2nd-harmonic circle as part of add_topdown_circles) --
+        if has_equilibrium and resolveZ_file:
+            plotting_functions.add_cyclotron_resonances(R1d, Z1d, StixY, ax)
+
+        ax.set_xlabel(axis_labels[0])
+        ax.set_ylabel(axis_labels[1])
+        ax.set_title(title, fontsize=13)
+
+        # -- Axis limits ---------------------------------------------------
+        Rmin_b, Rmax_b, Zmin_b, Zmax_b = beams[0]['beam_extent']
+        beamView = getattr(idata, 'beamView', False)
+        if has_equilibrium and resolveZ_file and not beamView:
+            ax.set_xlim(Rmin, Rmax)
+            ax.set_ylim(Zmin, Zmax)
+        else:
+            ax.set_xlim(Rmin_b, Rmax_b)
+            ax.set_ylim(Zmin_b, Zmax_b)
+
+    if any_abs:
+        print('Total absorbed power: {:.3f} ± {:.3f} MW'.format(
+            P_abs_total[0], P_abs_total[1]))
+
+    plt.tight_layout()
     plt.show()
 
-    # return
     return
 #
 # END OF FILE

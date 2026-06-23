@@ -777,6 +777,16 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
         #---Bounce averaging calculation-#
         #--------------------------------#
 
+        # Full-orbit bounce normalization kernel (360-pt theta_trap, always −π…π).
+        # lambda_q for passing particles must integrate over the entire orbit,
+        # not just the scanned theta range, to avoid a 1/theta_range bias in D_RF.
+        R_axis_tr_l  = ptR_tr[l, :] - Rp
+        Z_axis_tr_l  = ptZ_tr[l, :] - Zp
+        CB_full_orbit = (ptB_tr[l, :] * (R_axis_tr_l**2 + Z_axis_tr_l**2)
+                         / (Rp * np.abs(ptBR_tr[l, :] * Z_axis_tr_l
+                                        - ptBz_tr[l, :] * R_axis_tr_l)))
+        d_theta_full = 2 * np.pi / len(theta_trap)   # uniform step of theta_trap
+
         if not use_sparse:
             # Dense path: Wfct slice and 3-D interpolant for trapped particles.
             Edens_at_psi     = Edens[l, :, :, :]
@@ -817,8 +827,12 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
                 ksi_vals          = np.sign(ksi0_val) * np.sqrt(1 - B_ratio_h * (1 - ksi0_val**2))
                 ksi0_over_ksi_j_h = ksi0_val / ksi_vals
 
-                # Lambda*q normalisation factor for the bounce average [t]
-                lambda_q_h[l, j] = bounce_sum(d_theta_grid_j_h, CB_j_h, ksi0_over_ksi_j_h, passing, False)
+                # Lambda*q: always integrate over the full orbit so lambda_q is
+                # independent of the scanned theta range (avoids 1/range bias).
+                ksi_tr_h = np.sign(ksi0_val) * np.sqrt(
+                    np.clip(1 - ptB_tr[l, :] / B0_psi * (1 - ksi0_val**2), eps**2, None))
+                lambda_q_h[l, j] = np.nansum(
+                    d_theta_full / (2 * np.pi) * CB_full_orbit * (ksi0_val / ksi_tr_h))
 
                 # Define the integrands for the different bounce integrals [t]
                 # See the notes for the derivation of these
@@ -1009,8 +1023,11 @@ def D_RF(psi, theta_w, p_norm_w, p_norm_h, ksi0_w, ksi0_h, npar, nperp, Edens, E
                 ksi_vals          = np.sign(ksi0_val) * np.sqrt(1 - B_ratio_w * (1 - ksi0_val**2))
                 ksi0_over_ksi_j_w = ksi0_val / ksi_vals
 
-                # Lambda*q normalisation factor
-                lambda_q_w[l, j] = bounce_sum(d_theta_grid_j_w, CB_j_w, ksi0_over_ksi_j_w, passing, False)
+                # Lambda*q: full orbit, same rationale as ksi0_h loop above.
+                ksi_tr_w = np.sign(ksi0_val) * np.sqrt(
+                    np.clip(1 - ptB_tr[l, :] / B0_psi * (1 - ksi0_val**2), eps**2, None))
+                lambda_q_w[l, j] = np.nansum(
+                    d_theta_full / (2 * np.pi) * CB_full_orbit * (ksi0_val / ksi_tr_w))
 
                 # Bounce integrands
                 DRF0_integrand = ksi0_over_ksi_j_w**2 * B_ratio_w
