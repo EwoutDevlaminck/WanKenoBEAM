@@ -120,7 +120,11 @@ def scan(pattern: str, margin_frac: float = 0.01):
         lo_m = max(lo_m, phys_lo)
         hi_m = min(hi_m, phys_hi)
 
-        bw     = TARGET_BIN_WIDTHS.get(key)
+        # One extra bin on each side, within physical limits
+        bw = TARGET_BIN_WIDTHS.get(key)
+        if bw:
+            lo_m = max(lo_m - bw, phys_lo)
+            hi_m = min(hi_m + bw, phys_hi)
         n_bins = math.ceil((hi_m - lo_m) / bw) if (bw and hi_m > lo_m) else '—'
 
         print(f"{key:8s}  {raw_lo:9.4f}  {raw_hi:9.4f}  "

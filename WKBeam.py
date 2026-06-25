@@ -90,7 +90,7 @@ WKBeam_modes = {
     },
     'QLdiff': {
     	'procedure': 'call_QLdiff',
-    	'module': 'QL_diffusion.QL_diff_calc',
+    	'module': 'QL_diffusion.QL_diff_driver',
     },
 }
 

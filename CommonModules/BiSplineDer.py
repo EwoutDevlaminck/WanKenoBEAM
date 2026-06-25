@@ -49,6 +49,10 @@ class BiSpline(object):
         evaluates the interpolation object at position x,y.
         x and y must be floats.
 
+      - eval_vec(x_arr, y_arr):
+        evaluates the interpolation object at N scattered (x, y) points.
+        x_arr and y_arr must be 1D arrays of length N.
+
       - derx(x,y):
         evaluates the derivative with respect to x of the
         interpolation. Again, x and y indicate the position
@@ -93,9 +97,21 @@ class BiSpline(object):
 
         """This function returns the result of the interpolation
         at the given point (x,y). x and y must be floats."""
-    
+
         return self.__interpol__(x,y).item(0)
 
+    def eval_vec(self, x_arr, y_arr):
+        """Evaluate the interpolant at N scattered (x, y) points.
+
+        Parameters
+        ----------
+        x_arr, y_arr : 1-D ndarrays of length N
+
+        Returns
+        -------
+        1-D ndarray of length N
+        """
+        return self.__interpol__.ev(x_arr, y_arr)
 
     ##########################################################################
     # FUNCTION FOR THE EVALUATION OF DERIVATIVE WITH RESPECT TO  x AT (x,y)
@@ -196,11 +212,23 @@ class UniBiSpline(object):
         2) at last evaluate F(x,y) = F(psi(x,y)).
         """
 
-        # Evaluation of the density
         psiloc = self.__psi__.eval(x, y)
         Floc = self.__profile__(psiloc)
-        
         return Floc
+
+    def eval_vec(self, x_arr, y_arr):
+        """Evaluate the profile at N scattered (x, y) points.
+
+        Parameters
+        ----------
+        x_arr, y_arr : 1-D ndarrays of length N
+
+        Returns
+        -------
+        1-D ndarray of length N
+        """
+        psi_arr = self.__psi__.__interpol__.ev(x_arr, y_arr)
+        return self.__profile__(psi_arr)
 
     ##########################################################################
     # FUNCTION FOR THE EVALUATION OF DERIVATIVE dF/dpsi

@@ -516,8 +516,14 @@ def _postprocess_and_write(idata, accum, setup, outputfilename):
 
     with h5py.File(outputfilename, 'w') as fid:
         if idata.computeAmplitude:
-            if idata.storeWfct:          fid.create_dataset("BinnedTraces",  data=Wfct)
-            if idata.storeVelocityField: fid.create_dataset("VelocityField", data=VelocityField)
+            # When sparse_output is requested, BinnedTraces and VelocityField are
+            # written in COO format into the 'sparse/' subgroup below instead.
+            # Absorption is kept dense unconditionally (it is small and not part
+            # of the sparse QL-coupling format).
+            if idata.storeWfct and not idata.sparse_output:
+                fid.create_dataset("BinnedTraces",  data=Wfct)
+            if idata.storeVelocityField and not idata.sparse_output:
+                fid.create_dataset("VelocityField", data=VelocityField)
             if idata.storeAbsorption:    fid.create_dataset("Absorption",    data=Absorption)
         if idata.computeAmplitudeUnscattered:
             if idata.storeWfct:          fid.create_dataset("BinnedTracesUnscattered",  data=accum['WfctUnscattered'])
@@ -564,16 +570,15 @@ def _postprocess_and_write(idata, accum, setup, outputfilename):
         fid.create_dataset("centraleta1",        data=file_params["centraleta1"])
         fid.create_dataset("centraleta2",        data=file_params["centraleta2"])
 
-        # --- Optional sparse output (idata.sparse_output = True) ---
-        # Writes BinnedTraces and any requested cos_phiN / cos2_phiN arrays in
-        # COO format into a 'sparse/' subgroup.  The dense datasets above are
-        # preserved unchanged for backward compatibility.
+        # --- Sparse output (idata.sparse_output = True) ---
+        # All wave-field data (BinnedTraces + every VelocityField component) are
+        # written in COO format, sharing the nonzero support of BinnedTraces.
+        # Dense counterparts are suppressed above so nothing is stored twice.
         if getattr(idata, 'sparse_output', False) and idata.computeAmplitude and idata.storeWfct:
             sparse_arrays = {'BinnedTraces': Wfct[:, :, :, :, 0]}
             if idata.storeVelocityField:
                 for k, comp in enumerate(VelocityComponentsToStore):
-                    if comp in ('cos_phiN', 'cos2_phiN'):
-                        sparse_arrays[comp] = VelocityField[:, :, :, :, k, 0]
+                    sparse_arrays[comp] = VelocityField[:, :, :, :, k, 0]
             _write_sparse_output(fid.require_group('sparse'), sparse_arrays)
 
 
